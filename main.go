@@ -11,6 +11,8 @@ import (
 	temporalEnums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 	"log"
 	"os"
 	"strings"
@@ -50,11 +52,20 @@ func (m model) handleSearchModeSelect(msg tea.KeyMsg) model {
 		m.searchInput.Focus()
 		m.searchInput.Prompt = "Search WorkflowId: "
 	}
+	if msg.String() == "s" {
+		m.searchMode = EXECUTIONSTATUS
+		m.searchInput.Prompt = "Search WorkflowStatus: "
+		m.searchInput.Focus()
+	}
 	return m
 }
 
 func (m model) handleSearchUpdate(msg tea.KeyMsg) (model, tea.Cmd) {
 	if m.searchInput.Focused() && msg.String() == "enter" {
+		if m.searchMode == EXECUTIONSTATUS {
+			caser := cases.Title(language.English)
+			m.searchInput.SetValue(caser.String(m.searchInput.Value()))
+		}
 		m.activeSearchParams[m.searchMode] = append(m.activeSearchParams[m.searchMode], m.searchInput.Value())
 		m.searchInput.Blur()
 		m.searchInput.SetValue("")
@@ -67,7 +78,12 @@ func (m model) handleSearchUpdate(msg tea.KeyMsg) (model, tea.Cmd) {
 		m.searchMode = ""
 		return m, nil
 	}
-	if m.searchInput.Focused() && msg.String() != "esc" && msg.String() != "enter" && msg.String() != "ctrl+c" {
+	if msg.String() == "ctrl+c" {
+		m.searchInput.Blur()
+		m.searchMode = ""
+		return m, nil
+	}
+	if m.searchInput.Focused() {
 		var cmd tea.Cmd
 		m.searchInput, cmd = m.searchInput.Update(msg)
 		return m, tea.Batch(m.getPossibleSearchOptionsCmd, cmd)
@@ -79,9 +95,9 @@ func (m model) getPossibleSearchOptionsCmd() tea.Msg {
 	if m.searchInput.Value() == "" {
 		return []string{}
 	}
-	if m.searchMode == WORKFLOWTYPE {
+	if m.searchMode == WORKFLOWTYPE || m.searchMode == WORKFLOWID {
 		temporalClient, _ := getTemporalClient()
-		query := fmt.Sprintf("WorkflowType BETWEEN \"%s\" AND \"%s~\"", m.searchInput.Value(), m.searchInput.Value())
+		query := fmt.Sprintf("%s BETWEEN \"%s\" AND \"%s~\"", m.searchMode, m.searchInput.Value(), m.searchInput.Value())
 		result, err := temporalClient.ListWorkflow(context.Background(), &workflowservice.ListWorkflowExecutionsRequest{
 			Query:    query,
 			PageSize: 1,
@@ -89,11 +105,28 @@ func (m model) getPossibleSearchOptionsCmd() tea.Msg {
 		if err != nil {
 			log.Fatalf("Failed to list workflows: %v", err)
 		}
-		workflowTypes := []string{}
+		opts := []string{}
 		for _, w := range result.GetExecutions() {
-			workflowTypes = append(workflowTypes, w.GetType().Name)
+			if m.searchMode == WORKFLOWID {
+				opts = append(opts, w.GetExecution().WorkflowId)
+			}
+			if m.searchMode == WORKFLOWTYPE {
+				opts = append(opts, w.GetType().Name)
+			}
 		}
-		return retrievedSearchOptionsMsg{searchOptions: workflowTypes}
+		return retrievedSearchOptionsMsg{searchOptions: opts}
+	}
+	if m.searchMode == EXECUTIONSTATUS {
+		opts := []string{
+			"Completed",
+			"Failed",
+			"Canceled",
+			"Running",
+			"Terminated",
+			"ContinuedAsNew",
+		}
+		return retrievedSearchOptionsMsg{searchOptions: opts}
+
 	}
 	return []string{}
 }
@@ -280,9 +313,9 @@ func (m model) refetchWorkflowCountCmd(executionStatus temporalEnums.WorkflowExe
 type searchMode string
 
 const (
-	WORKFLOWTYPE   searchMode = "WorkflowType"
-	WORKFLOWID     searchMode = "WorkflowId"
-	WORKFLOWSTATUS searchMode = "WorkflowStatus"
+	WORKFLOWTYPE    searchMode = "WorkflowType"
+	WORKFLOWID      searchMode = "WorkflowId"
+	EXECUTIONSTATUS searchMode = "ExecutionStatus"
 )
 
 type model struct {
@@ -307,7 +340,7 @@ func initialModel() model {
 	activeSearchParams := make(map[searchMode][]string)
 	activeSearchParams[WORKFLOWTYPE] = []string{}
 	activeSearchParams[WORKFLOWID] = []string{}
-	activeSearchParams[WORKFLOWSTATUS] = []string{}
+	activeSearchParams[EXECUTIONSTATUS] = []string{}
 	return model{
 		activeSearchParams: activeSearchParams,
 		searchInput:        textInput,
