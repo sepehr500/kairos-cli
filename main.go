@@ -85,8 +85,10 @@ var EvenRowStyle = lipgloss.NewStyle().Padding(0, 0).Background(lipgloss.Color("
 var OddRowStyle = lipgloss.NewStyle().Padding(0, 0)
 
 func (m model) renderHeader() string {
+	totalRunning := m.upToDateWorkflowCount[temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING]
+	totalCompleted := m.upToDateWorkflowCount[temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED]
 	headerStyle := lipgloss.NewStyle().Padding(0, 0).Width(m.viewport.Width).Height(HEADER_HEIGHT)
-	header := "Workflow List"
+	header := fmt.Sprintf("Total Running: %d Total Completed: %d", totalRunning, totalCompleted)
 	return headerStyle.Render(header)
 }
 
@@ -165,7 +167,7 @@ type updateVisibleWorkflowsMsg struct {
 }
 
 func (m model) updateVisibleWorkflowsBackgroundCmd() tea.Cmd {
-	return tea.Tick(time.Second*3, func(_ time.Time) tea.Msg {
+	return tea.Tick(time.Second*5, func(_ time.Time) tea.Msg {
 		temporalClient, _ := getTemporalClient()
 		currentRunningExecutionIds := []string{}
 		for _, execution := range m.workflows {
@@ -206,7 +208,7 @@ func (m model) refetchWorkflowCountCmd(executionStatus temporalEnums.WorkflowExe
 			query = fmt.Sprintf("%s AND %s", query, statusQuery)
 		}
 		queryResult, err := temporalClient.CountWorkflow(context.Background(), &workflowservice.CountWorkflowExecutionsRequest{
-			Query: "",
+			Query: query,
 		})
 		if err != nil {
 			log.Fatalf("Failed to count workflows: %v", err)
@@ -378,11 +380,13 @@ func (m model) Init() tea.Cmd {
 		m.refetchWorkflowsCmd(),
 		m.updateVisibleWorkflowsBackgroundCmd(),
 		m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED),
+		m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING),
 		m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED),
 		m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED),
 		m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED),
 		m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED),
 		m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED),
+		m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING),
 	)
 }
 func main() {
