@@ -32,6 +32,15 @@ const (
 // ========================================
 var textInputWrapperStyle = lipgloss.NewStyle().Height(SEARCH_INPUT_HEIGHT)
 
+type constructQueryStringParams struct {
+	key   string
+	value string
+}
+
+func (m model) constructQueryString(params constructQueryStringParams) string {
+	return fmt.Sprintf("%s = '%s'", params.key, params.value)
+}
+
 func (m model) renderFooter() string {
 	textInputWrapperStyle := textInputWrapperStyle.Width(m.viewport.Width)
 
@@ -184,7 +193,16 @@ func (m model) refetchWorkflowCountCmd(executionStatus temporalEnums.WorkflowExe
 // Main Bubble Tea Control Loop
 // ========================================
 
+type searchMode string
+
+const (
+	WORKFLOWTYPE   searchMode = "workflowType"
+	WORKFLOWID     searchMode = "workflowId"
+	WORKFLOWSTATUS searchMode = "workflowStatus"
+)
+
 type model struct {
+	searchMode
 	searchOptions              []string
 	searchInput                textinput.Model
 	ready                      bool
@@ -264,9 +282,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Is it a key press?
 	case tea.KeyMsg:
-
+		if m.searchInput.Focused() && msg.String() == "enter" {
+			m.searchStr = m.constructQueryString(constructQueryStringParams{key: "WorkflowType", value: m.searchInput.Value()})
+			m.searchInput.Blur()
+			m.searchInput.SetValue("")
+			return m, m.refetchWorkflowsCmd()
+		}
+		if m.searchInput.Focused() && msg.String() != "esc" && msg.String() != "enter" && msg.String() != "ctrl+c" {
+			var cmd tea.Cmd
+			m.searchInput, cmd = m.searchInput.Update(msg)
+			return m, cmd
+		}
 		// Cool, what was the actual key pressed?
 		switch msg.String() {
+		// Search by workflow type
+		case "w":
+			m.searchMode = WORKFLOWTYPE
+			m.searchInput.Focus()
+			return m, nil
+		// If escape blur the search input
+		case "esc":
+			m.searchInput.Blur()
+			return m, nil
 
 		case "r":
 			return m, m.refetchWorkflowsCmd()
