@@ -22,7 +22,7 @@ import (
 // ========================================
 const (
 	// App Header Height
-	HEADER_HEIGHT = 1
+	HEADER_HEIGHT = 2
 	// App Search Input Height
 	SEARCH_INPUT_HEIGHT = 1
 )
@@ -34,6 +34,45 @@ var textInputWrapperStyle = lipgloss.NewStyle().Height(SEARCH_INPUT_HEIGHT)
 
 type retrievedSearchOptionsMsg struct {
 	searchOptions []string
+}
+
+// The struct that stores the search options by serach mode
+type activeSearchParams map[searchMode][]string
+
+func (m model) handleSearchModeSelect(msg tea.KeyMsg) model {
+	if msg.String() == "w" {
+		m.searchMode = WORKFLOWTYPE
+		m.searchInput.Prompt = "Search WorkflowType: "
+		m.searchInput.Focus()
+	}
+	if msg.String() == "i" {
+		m.searchMode = WORKFLOWID
+		m.searchInput.Focus()
+		m.searchInput.Prompt = "Search WorkflowId: "
+	}
+	return m
+}
+
+func (m model) handleSearchUpdate(msg tea.KeyMsg) (model, tea.Cmd) {
+	if m.searchInput.Focused() && msg.String() == "enter" {
+		m.activeSearchParams[m.searchMode] = append(m.activeSearchParams[m.searchMode], m.searchInput.Value())
+		m.searchInput.Blur()
+		m.searchInput.SetValue("")
+		// Clear searchMode
+		m.searchMode = ""
+		return m, m.refetchWorkflowsCmd()
+	}
+	if msg.String() == "esc" {
+		m.searchInput.Blur()
+		m.searchMode = ""
+		return m, nil
+	}
+	if m.searchInput.Focused() && msg.String() != "esc" && msg.String() != "enter" && msg.String() != "ctrl+c" {
+		var cmd tea.Cmd
+		m.searchInput, cmd = m.searchInput.Update(msg)
+		return m, tea.Batch(m.getPossibleSearchOptionsCmd, cmd)
+	}
+	return m, nil
 }
 
 func (m model) getPossibleSearchOptionsCmd() tea.Msg {
@@ -59,18 +98,33 @@ func (m model) getPossibleSearchOptionsCmd() tea.Msg {
 	return []string{}
 }
 
-type constructQueryStringParams struct {
-	key   string
-	value string
-}
+func (m model) constructQueryString() string {
+	currentSearchParams := m.activeSearchParams
+	// Loop through the search params and construct the query string
+	queryString := ""
+	for searchMode, searchValues := range currentSearchParams {
+		if len(searchValues) == 0 {
+			continue
+		}
+		if queryString != "" {
+			queryString += " AND "
+		}
 
-func (m model) constructQueryString(params constructQueryStringParams) string {
-	return fmt.Sprintf("%s = '%s'", params.key, params.value)
+		querySegments := []string{}
+		for _, searchValue := range searchValues {
+			querySegments = append(querySegments, fmt.Sprintf("%s = '%s'", searchMode, searchValue))
+		}
+		queryGroupString := fmt.Sprintf("(%s)", strings.Join(querySegments, " OR "))
+		queryString += queryGroupString
+	}
+	return queryString
 }
 
 func (m model) renderFooter() string {
+	if m.searchMode == "" {
+		return ""
+	}
 	textInputWrapperStyle := textInputWrapperStyle.Width(m.viewport.Width)
-
 	searchInputStyle := m.searchInput.View()
 	return textInputWrapperStyle.Render(searchInputStyle)
 
@@ -89,7 +143,8 @@ func (m model) renderHeader() string {
 	totalCompleted := m.upToDateWorkflowCount[temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED]
 	headerStyle := lipgloss.NewStyle().Padding(0, 0).Width(m.viewport.Width).Height(HEADER_HEIGHT)
 	header := fmt.Sprintf("Total Running: %d Total Completed: %d", totalRunning, totalCompleted)
-	return headerStyle.Render(header)
+	currentQuery := m.constructQueryString()
+	return headerStyle.Render(header + " " + currentQuery)
 }
 
 func (m model) renderTable(workflows []*workflow.WorkflowExecutionInfo) string {
@@ -148,7 +203,7 @@ type updateWorkflowsMsg struct {
 func (m model) refetchWorkflowsCmd() tea.Cmd {
 	return func() tea.Msg {
 		temporalClient, _ := getTemporalClient()
-		query := m.searchStr
+		query := m.constructQueryString()
 		queryResult, err := temporalClient.ListWorkflow(context.Background(), &workflowservice.ListWorkflowExecutionsRequest{
 			Query:    query,
 			PageSize: 30,
@@ -200,7 +255,7 @@ func (m model) refetchWorkflowCountCmd(executionStatus temporalEnums.WorkflowExe
 	return func() tea.Msg {
 		temporalClient, _ := getTemporalClient()
 		statusQuery := fmt.Sprintf("ExecutionStatus = %d", executionStatus)
-		query := m.searchStr
+		query := m.constructQueryString()
 		if query == "" {
 			query = statusQuery
 		}
@@ -231,11 +286,11 @@ const (
 )
 
 type model struct {
+	activeSearchParams         activeSearchParams
 	searchMode                 searchMode
 	searchOptions              []string
 	searchInput                textinput.Model
 	ready                      bool
-	searchStr                  string
 	workflows                  []*workflow.WorkflowExecutionInfo // items on the to-do list
 	cursor                     int                               // which to-do list item our cursor is pointing at
 	selected                   map[int]struct{}                  // which to-do items are selected
@@ -247,14 +302,18 @@ type model struct {
 
 func initialModel() model {
 	textInput := textinput.New()
-	textInput.Placeholder = "Search"
+	textInput.Prompt = ""
 	textInput.ShowSuggestions = true
-	// textInput.Prompt = ""
+	activeSearchParams := make(map[searchMode][]string)
+	activeSearchParams[WORKFLOWTYPE] = []string{}
+	activeSearchParams[WORKFLOWID] = []string{}
+	activeSearchParams[WORKFLOWSTATUS] = []string{}
 	return model{
-		searchInput: textInput,
-		ready:       false,
-		workflows:   []*workflow.WorkflowExecutionInfo{},
-		selected:    make(map[int]struct{}),
+		activeSearchParams: activeSearchParams,
+		searchInput:        textInput,
+		ready:              false,
+		workflows:          []*workflow.WorkflowExecutionInfo{},
+		selected:           make(map[int]struct{}),
 		upToDateWorkflowCount: map[temporalEnums.WorkflowExecutionStatus]int64{
 			temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED: 0,
 			temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED:    0,
@@ -316,29 +375,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Is it a key press?
 	case tea.KeyMsg:
-		if m.searchInput.Focused() && msg.String() == "enter" {
-			m.searchStr = m.constructQueryString(constructQueryStringParams{key: string(m.searchMode), value: m.searchInput.Value()})
-			m.searchInput.Blur()
-			m.searchInput.SetValue("")
-			return m, m.refetchWorkflowsCmd()
+		if m.searchInput.Focused() {
+			return m.handleSearchUpdate(msg)
 		}
-		if m.searchInput.Focused() && msg.String() != "esc" && msg.String() != "enter" && msg.String() != "ctrl+c" {
-			var cmd tea.Cmd
-			m.searchInput, cmd = m.searchInput.Update(msg)
-			return m, tea.Batch(m.getPossibleSearchOptionsCmd, cmd)
-		}
-		// Cool, what was the actual key pressed?
-		switch msg.String() {
-		// Search by workflow type
-		case "w":
-			m.searchMode = WORKFLOWTYPE
-			m.searchInput.Focus()
-			return m, nil
-		// If escape blur the search input
-		case "esc":
-			m.searchInput.Blur()
-			return m, nil
 
+		m = m.handleSearchModeSelect(msg)
+
+		switch msg.String() {
+		// Reset the search params if c is pressed
+		case "c":
+			m.activeSearchParams = make(map[searchMode][]string)
+			return m, m.refetchWorkflowsCmd()
 		case "r":
 			return m, m.refetchWorkflowsCmd()
 		// These keys should exit the program.
