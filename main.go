@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
@@ -9,17 +11,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
+	temporalEnums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflow/v1"
+	"go.temporal.io/api/workflowservice/v1"
 )
 
-type model struct {
-	ready     bool
-	search    string
-	workflows []*workflow.WorkflowExecutionInfo // items on the to-do list
-	cursor    int                               // which to-do list item our cursor is pointing at
-	selected  map[int]struct{}                  // which to-do items are selected
-	viewport  viewport.Model
-}
+// ========================================
+// Table Logic and Rendering
+// ========================================
 
 var HeaderStyle = lipgloss.NewStyle().Padding(0, 0).Bold(true)
 var EvenRowStyle = lipgloss.NewStyle().Padding(0, 0).Background(lipgloss.Color("#3b3b3b"))
@@ -39,69 +38,151 @@ func (m model) renderTable(workflows []*workflow.WorkflowExecutionInfo) string {
 				return OddRowStyle
 			}
 		}).
-		Headers("Status", "Type", "Id", "Start Time")
+		Headers("Status", "Type", "Id", "Start Time", "Close Time")
 	for _, w := range workflows {
 		workflowId := w.GetExecution().WorkflowId
 		startTime := w.GetStartTime().AsTime().Format(time.RFC3339)
-		t.Row(w.GetStatus().String(), w.GetType().Name, workflowId, startTime)
+		closeTime := w.GetCloseTime().AsTime().Format(time.RFC3339)
+		// If close time starts with 1970, it means the workflow is still running and has no close time
+		if closeTime[:4] == "1970" {
+			closeTime = "--"
+		}
+		t.Row(w.GetStatus().String(), w.GetType().Name, workflowId, startTime, closeTime)
 	}
 	return t.String()
+}
+
+// https://github.com/achannarasappa/ticker/blob/master/internal/ui/ui.go#L64
+
+type backgroundUpdateWorkflowCountMsg struct {
+	executionStatus temporalEnums.WorkflowExecutionStatus
+	count           int64
+}
+
+func (m model) backgroundUpdateWorkflowCountCmd(exeuctionStatus temporalEnums.WorkflowExecutionStatus) tea.Cmd {
+	return tea.Tick(time.Second*3, func(_ time.Time) tea.Msg {
+		result := m.refetchWorkflowCountCmd(exeuctionStatus)()
+		switch msg := result.(type) {
+		case updateWorkflowCountMsg:
+			return backgroundUpdateWorkflowCountMsg{executionStatus: exeuctionStatus, count: msg.count}
+
+		}
+		return nil
+	})
+}
+
+type updateWorkflowsMsg struct {
+	workflows []*workflow.WorkflowExecutionInfo
+}
+
+func (m model) refetchWorkflowsCmd() tea.Cmd {
+	return func() tea.Msg {
+		temporalClient, _ := getTemporalClient()
+		query := m.searchStr
+		queryResult, err := temporalClient.ListWorkflow(context.Background(), &workflowservice.ListWorkflowExecutionsRequest{
+			Query:    query,
+			PageSize: 20,
+		})
+		if err != nil {
+			log.Fatalf("Failed to list workflows: %v", err)
+		}
+		result := queryResult.GetExecutions()
+		return updateWorkflowsMsg{workflows: result}
+
+	}
+}
+
+type updateVisibleWorkflowsMsg struct {
+	workflows []*workflow.WorkflowExecutionInfo
+}
+
+func (m model) updateVisibleWorkflows() tea.Cmd {
+	return func() tea.Msg {
+		temporalClient, _ := getTemporalClient()
+		query := m.searchStr
+		queryResult, err := temporalClient.ListWorkflow(context.Background(), &workflowservice.ListWorkflowExecutionsRequest{
+			Query:    query,
+			PageSize: 20,
+		})
+		if err != nil {
+			log.Fatalf("Failed to list workflows: %v", err)
+		}
+		// Update all workflows currently visible (in the model)
+		for _, w := range m.workflows {
+			for _, newW := range queryResult.GetExecutions() {
+				if w.GetExecution().WorkflowId == newW.GetExecution().WorkflowId {
+					w = newW
+				}
+			}
+		}
+		return updateVisibleWorkflowsMsg{workflows: m.workflows}
+	}
+}
+
+type updateWorkflowCountMsg struct {
+	executionStatus temporalEnums.WorkflowExecutionStatus
+	count           int64
+}
+
+func (m model) refetchWorkflowCountCmd(executionStatus temporalEnums.WorkflowExecutionStatus) tea.Cmd {
+	return func() tea.Msg {
+		temporalClient, _ := getTemporalClient()
+		statusQuery := fmt.Sprintf("ExecutionStatus = %d", executionStatus)
+		query := m.searchStr
+		if query == "" {
+			query = statusQuery
+		}
+		if query != "" {
+			query = fmt.Sprintf("%s AND %s", query, statusQuery)
+		}
+		queryResult, err := temporalClient.CountWorkflow(context.Background(), &workflowservice.CountWorkflowExecutionsRequest{
+			Query: "",
+		})
+		if err != nil {
+			log.Fatalf("Failed to count workflows: %v", err)
+		}
+		result := queryResult.GetCount()
+		return updateWorkflowCountMsg{executionStatus: executionStatus, count: result}
+	}
+}
+
+// ========================================
+// Main Bubble Tea Control Loop
+// ========================================
+
+type model struct {
+	ready                      bool
+	searchStr                  string
+	workflows                  []*workflow.WorkflowExecutionInfo // items on the to-do list
+	cursor                     int                               // which to-do list item our cursor is pointing at
+	selected                   map[int]struct{}                  // which to-do items are selected
+	viewport                   viewport.Model
+	staticVisibleWorkflowCount map[temporalEnums.WorkflowExecutionStatus]int64
+	// This is the workflow count that is up to date in the background
+	upToDateWorkflowCount map[temporalEnums.WorkflowExecutionStatus]int64
 }
 
 func initialModel() model {
 	return model{
 		ready:     false,
 		workflows: []*workflow.WorkflowExecutionInfo{},
-		search:    "",
 		selected:  make(map[int]struct{}),
+		upToDateWorkflowCount: map[temporalEnums.WorkflowExecutionStatus]int64{
+			temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED: 0,
+			temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED:    0,
+			temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED:  0,
+		},
+		staticVisibleWorkflowCount: map[temporalEnums.WorkflowExecutionStatus]int64{
+			temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED: 0,
+			temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED:    0,
+			temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED:  0,
+		},
 	}
 }
 
 func (m model) View() string {
-
-	// Iterate over our choices
-	// for i, choice := range m.workflows {
-	// 	// Is the cursor pointing at this choice?
-	// 	cursor := " " // no cursor
-	// 	if m.cursor == i {
-	// 		cursor = ">" // cursor!
-	// 	}
-	//
-	// 	// Is this choice selected?
-	// 	checked := " " // not selected
-	// 	if _, ok := m.selected[i]; ok {
-	// 		checked = "x" // selected!
-	// 	}
-	//
-	// 	renderTable(m.workflows)
-	// 	s += fmt.Sprintf("%s [%s] %s\n", cursor, checked, choice.Execution.GetWorkflowId())
-	// }
-	//
-	// // The footer
-	// s += "\nPress q to quit.\n"
-
-	// Send the UI for rendering
 	m.viewport.SetContent(m.renderTable(m.workflows))
 	return m.viewport.View()
-}
-
-type listWorkflowsMsg struct {
-	workflows []*workflow.WorkflowExecutionInfo
-}
-
-// https://github.com/achannarasappa/ticker/blob/master/internal/ui/ui.go#L64
-
-func updateWorkflows(search string) tea.Cmd {
-	return tea.Tick(time.Second*3, func(_ time.Time) tea.Msg {
-		return listWorkflowsCmd(search)()
-	})
-}
-
-func listWorkflowsCmd(search string) tea.Cmd {
-	return func() tea.Msg {
-		result := listWorkflows(search)
-		return listWorkflowsMsg{workflows: result}
-	}
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -119,10 +200,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		}
 
-	case listWorkflowsMsg:
-		// log.Printf("Got workflows: %v", msg.workflows)
+	case updateWorkflowCountMsg:
+		m.staticVisibleWorkflowCount[msg.executionStatus] = msg.count
+		return m, nil
+	case backgroundUpdateWorkflowCountMsg:
+		m.upToDateWorkflowCount[msg.executionStatus] = msg.count
+		return m, m.backgroundUpdateWorkflowCountCmd(msg.executionStatus)
+
+	case updateVisibleWorkflowsMsg:
 		m.workflows = msg.workflows
-		return m, updateWorkflows(m.search)
+		return m, m.updateVisibleWorkflows()
+	case updateWorkflowsMsg:
+		m.workflows = msg.workflows
+		return m, nil
 
 	// Is it a key press?
 	case tea.KeyMsg:
@@ -130,6 +220,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Cool, what was the actual key pressed?
 		switch msg.String() {
 
+		case "r":
+			return m, m.refetchWorkflowsCmd()
 		// These keys should exit the program.
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -165,7 +257,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) Init() tea.Cmd {
 	// Just return `nil`, which means "no I/O right now, please."
-	return listWorkflowsCmd("")
+	return tea.Batch(
+		m.refetchWorkflowsCmd(),
+		m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED),
+		m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED),
+		m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED),
+		m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED),
+		m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED),
+		m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED),
+	)
 }
 func main() {
 	p := tea.NewProgram(initialModel(), tea.WithAltScreen(), tea.WithMouseCellMotion())

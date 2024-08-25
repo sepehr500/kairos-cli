@@ -99,7 +99,6 @@ func listWorkflows(workflowName string) []*workflow.WorkflowExecutionInfo {
 	}
 
 	return result.GetExecutions()
-
 }
 
 func KickoffWorkflow(workflowName string, payload string) (string, error) {
