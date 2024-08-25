@@ -96,8 +96,8 @@ type updateVisibleWorkflowsMsg struct {
 	workflows []*workflow.WorkflowExecutionInfo
 }
 
-func (m model) updateVisibleWorkflows() tea.Cmd {
-	return func() tea.Msg {
+func (m model) updateVisibleWorkflowsBackgroundCmd() tea.Cmd {
+	return tea.Tick(time.Second*3, func(_ time.Time) tea.Msg {
 		temporalClient, _ := getTemporalClient()
 		query := m.searchStr
 		queryResult, err := temporalClient.ListWorkflow(context.Background(), &workflowservice.ListWorkflowExecutionsRequest{
@@ -107,16 +107,19 @@ func (m model) updateVisibleWorkflows() tea.Cmd {
 		if err != nil {
 			log.Fatalf("Failed to list workflows: %v", err)
 		}
-		// Update all workflows currently visible (in the model)
-		for _, w := range m.workflows {
-			for _, newW := range queryResult.GetExecutions() {
-				if w.GetExecution().WorkflowId == newW.GetExecution().WorkflowId {
-					w = newW
+		currentExecutions := m.workflows
+		justFetchedExecutions := queryResult.GetExecutions()
+		workflowsToUpdate := []*workflow.WorkflowExecutionInfo{}
+		for _, newExecution := range justFetchedExecutions {
+			for _, currentExecution := range currentExecutions {
+				if newExecution.GetExecution().WorkflowId == currentExecution.GetExecution().WorkflowId {
+					workflowsToUpdate = append(workflowsToUpdate, newExecution)
 				}
 			}
 		}
-		return updateVisibleWorkflowsMsg{workflows: m.workflows}
-	}
+		return updateVisibleWorkflowsMsg{workflows: workflowsToUpdate}
+
+	})
 }
 
 type updateWorkflowCountMsg struct {
@@ -208,8 +211,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.backgroundUpdateWorkflowCountCmd(msg.executionStatus)
 
 	case updateVisibleWorkflowsMsg:
-		m.workflows = msg.workflows
-		return m, m.updateVisibleWorkflows()
+		// Look for workflows that are in the current list and update them
+		for _, updatedWorkflow := range msg.workflows {
+			for i, currentWorkflow := range m.workflows {
+				if updatedWorkflow.GetExecution().WorkflowId == currentWorkflow.GetExecution().WorkflowId {
+					m.workflows[i] = updatedWorkflow
+				}
+			}
+		}
+		return m, m.updateVisibleWorkflowsBackgroundCmd()
 	case updateWorkflowsMsg:
 		m.workflows = msg.workflows
 		return m, nil
@@ -259,6 +269,7 @@ func (m model) Init() tea.Cmd {
 	// Just return `nil`, which means "no I/O right now, please."
 	return tea.Batch(
 		m.refetchWorkflowsCmd(),
+		m.updateVisibleWorkflowsBackgroundCmd(),
 		m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED),
 		m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED),
 		m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED),
