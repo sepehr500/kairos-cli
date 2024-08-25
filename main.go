@@ -20,6 +20,52 @@ import (
 )
 
 // ========================================
+// Status Styles
+// ========================================
+
+// Status String to style map
+
+type ExecutionStatusStyleInfo struct {
+	displayName string
+	icon        string
+	color       string
+}
+
+var statusToStyleMap = map[string]ExecutionStatusStyleInfo{
+	temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED.String(): {
+		displayName: "Completed",
+		icon:        "✅",
+		color:       "#00ff00",
+	},
+	temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED.String(): {
+		displayName: "Failed",
+		icon:        "❌",
+		color:       "#ff0000",
+	},
+	temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED.String(): {
+		displayName: "Canceled",
+		icon:        "✋",
+		color:       "#808080",
+	},
+	temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING.String(): {
+		displayName: "Running",
+		icon:        "🏃",
+		color:       "#00ff00",
+	},
+	temporalEnums.WORKFLOW_EXECUTION_STATUS_TERMINATED.String(): {
+		displayName: "Terminated",
+		// Skull icon
+		icon:  "💀",
+		color: "#ffff00",
+	},
+	temporalEnums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW.String(): {
+		displayName: "Continued as New",
+		icon:        "🔄",
+		color:       "#800080",
+	},
+}
+
+// ========================================
 // Screen Constants
 // ========================================
 const (
@@ -118,12 +164,12 @@ func (m model) getPossibleSearchOptionsCmd() tea.Msg {
 	}
 	if m.searchMode == EXECUTIONSTATUS {
 		opts := []string{
-			"Completed",
-			"Failed",
-			"Canceled",
-			"Running",
-			"Terminated",
-			"ContinuedAsNew",
+			temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED.String(),
+			temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED.String(),
+			temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED.String(),
+			temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING.String(),
+			temporalEnums.WORKFLOW_EXECUTION_STATUS_TERMINATED.String(),
+			temporalEnums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW.String(),
 		}
 		return retrievedSearchOptionsMsg{searchOptions: opts}
 
@@ -175,9 +221,11 @@ func (m model) renderHeader() string {
 	totalRunning := m.upToDateWorkflowCount[temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING]
 	totalCompleted := m.upToDateWorkflowCount[temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED]
 	headerStyle := lipgloss.NewStyle().Padding(0, 0).Width(m.viewport.Width).Height(HEADER_HEIGHT)
-	header := fmt.Sprintf("Total Running: %d Total Completed: %d", totalRunning, totalCompleted)
+	queryStringStyle := lipgloss.NewStyle().Padding(0, 0).Width(m.viewport.Width).Height(1)
+	countStyle := lipgloss.NewStyle().Padding(0, 0).Width(m.viewport.Width).Height(1)
+	countStr := fmt.Sprintf("Total Running: %d Total Completed: %d", totalRunning, totalCompleted)
 	currentQuery := m.constructQueryString()
-	return headerStyle.Render(header + " " + currentQuery)
+	return headerStyle.Render(countStyle.Render(countStr) + "\n" + queryStringStyle.Render(currentQuery))
 }
 
 func (m model) renderTable(workflows []*workflow.WorkflowExecutionInfo) string {
@@ -205,7 +253,8 @@ func (m model) renderTable(workflows []*workflow.WorkflowExecutionInfo) string {
 		if closeTime[:4] == "1970" {
 			closeTime = "--"
 		}
-		t.Row(w.GetStatus().String(), w.GetType().Name, workflowId, startTime, closeTime)
+		statusIcon := statusToStyleMap[w.GetStatus().String()].icon
+		t.Row(statusIcon, w.GetType().Name, workflowId, startTime, closeTime)
 	}
 	return tableSurroundStyle.Render(t.Render())
 }
@@ -218,7 +267,7 @@ type backgroundUpdateWorkflowCountMsg struct {
 }
 
 func (m model) backgroundUpdateWorkflowCountCmd(exeuctionStatus temporalEnums.WorkflowExecutionStatus) tea.Cmd {
-	return tea.Tick(time.Second*3, func(_ time.Time) tea.Msg {
+	return tea.Tick(time.Second*5, func(_ time.Time) tea.Msg {
 		result := m.refetchWorkflowCountCmd(exeuctionStatus)()
 		switch msg := result.(type) {
 		case updateWorkflowCountMsg:
@@ -239,7 +288,7 @@ func (m model) refetchWorkflowsCmd() tea.Cmd {
 		query := m.constructQueryString()
 		queryResult, err := temporalClient.ListWorkflow(context.Background(), &workflowservice.ListWorkflowExecutionsRequest{
 			Query:    query,
-			PageSize: 30,
+			PageSize: 40,
 		})
 		if err != nil {
 			log.Fatalf("Failed to list workflows: %v", err)
