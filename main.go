@@ -3,10 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
-	"os"
-	"time"
-
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -14,7 +11,34 @@ import (
 	temporalEnums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
+	"log"
+	"os"
+	"strings"
+	"time"
 )
+
+// ========================================
+// Screen Constants
+// ========================================
+const (
+	// App Header Height
+	HEADER_HEIGHT = 1
+	// App Search Input Height
+	SEARCH_INPUT_HEIGHT = 1
+)
+
+// ========================================
+// Search Logic and Rendering
+// ========================================
+var textInputWrapperStyle = lipgloss.NewStyle().Height(SEARCH_INPUT_HEIGHT)
+
+func (m model) renderFooter() string {
+	textInputWrapperStyle := textInputWrapperStyle.Width(m.viewport.Width)
+
+	searchInputStyle := m.searchInput.View()
+	return textInputWrapperStyle.Render(searchInputStyle)
+
+}
 
 // ========================================
 // Table Logic and Rendering
@@ -24,7 +48,15 @@ var HeaderStyle = lipgloss.NewStyle().Padding(0, 0).Bold(true)
 var EvenRowStyle = lipgloss.NewStyle().Padding(0, 0).Background(lipgloss.Color("#3b3b3b"))
 var OddRowStyle = lipgloss.NewStyle().Padding(0, 0)
 
+func (m model) renderHeader() string {
+	headerStyle := lipgloss.NewStyle().Padding(0, 0).Width(m.viewport.Width).Height(HEADER_HEIGHT)
+	header := "Workflow List"
+	return headerStyle.Render(header)
+}
+
 func (m model) renderTable(workflows []*workflow.WorkflowExecutionInfo) string {
+
+	tableSurroundStyle := lipgloss.NewStyle().Padding(0, 0).Height(m.viewport.Height - SEARCH_INPUT_HEIGHT - HEADER_HEIGHT)
 	t := table.New().
 		Border(lipgloss.HiddenBorder()).
 		Width(m.viewport.Width).
@@ -49,7 +81,7 @@ func (m model) renderTable(workflows []*workflow.WorkflowExecutionInfo) string {
 		}
 		t.Row(w.GetStatus().String(), w.GetType().Name, workflowId, startTime, closeTime)
 	}
-	return t.String()
+	return tableSurroundStyle.Render(t.Render())
 }
 
 // https://github.com/achannarasappa/ticker/blob/master/internal/ui/ui.go#L64
@@ -81,7 +113,7 @@ func (m model) refetchWorkflowsCmd() tea.Cmd {
 		query := m.searchStr
 		queryResult, err := temporalClient.ListWorkflow(context.Background(), &workflowservice.ListWorkflowExecutionsRequest{
 			Query:    query,
-			PageSize: 20,
+			PageSize: 30,
 		})
 		if err != nil {
 			log.Fatalf("Failed to list workflows: %v", err)
@@ -99,7 +131,16 @@ type updateVisibleWorkflowsMsg struct {
 func (m model) updateVisibleWorkflowsBackgroundCmd() tea.Cmd {
 	return tea.Tick(time.Second*3, func(_ time.Time) tea.Msg {
 		temporalClient, _ := getTemporalClient()
-		query := m.searchStr
+		currentRunningExecutionIds := []string{}
+		for _, execution := range m.workflows {
+			if execution.GetCloseTime() == nil {
+				currentRunningExecutionIds = append(currentRunningExecutionIds, "'"+execution.GetExecution().WorkflowId+"'")
+			}
+		}
+		if len(currentRunningExecutionIds) == 0 {
+			return updateVisibleWorkflowsMsg{workflows: []*workflow.WorkflowExecutionInfo{}}
+		}
+		query := fmt.Sprintf("WorkflowId IN (%s)", strings.Join(currentRunningExecutionIds, ","))
 		queryResult, err := temporalClient.ListWorkflow(context.Background(), &workflowservice.ListWorkflowExecutionsRequest{
 			Query:    query,
 			PageSize: 20,
@@ -107,17 +148,7 @@ func (m model) updateVisibleWorkflowsBackgroundCmd() tea.Cmd {
 		if err != nil {
 			log.Fatalf("Failed to list workflows: %v", err)
 		}
-		currentExecutions := m.workflows
-		justFetchedExecutions := queryResult.GetExecutions()
-		workflowsToUpdate := []*workflow.WorkflowExecutionInfo{}
-		for _, newExecution := range justFetchedExecutions {
-			for _, currentExecution := range currentExecutions {
-				if newExecution.GetExecution().WorkflowId == currentExecution.GetExecution().WorkflowId {
-					workflowsToUpdate = append(workflowsToUpdate, newExecution)
-				}
-			}
-		}
-		return updateVisibleWorkflowsMsg{workflows: workflowsToUpdate}
+		return updateVisibleWorkflowsMsg{workflows: queryResult.GetExecutions()}
 
 	})
 }
@@ -154,6 +185,8 @@ func (m model) refetchWorkflowCountCmd(executionStatus temporalEnums.WorkflowExe
 // ========================================
 
 type model struct {
+	searchOptions              []string
+	searchInput                textinput.Model
 	ready                      bool
 	searchStr                  string
 	workflows                  []*workflow.WorkflowExecutionInfo // items on the to-do list
@@ -166,10 +199,14 @@ type model struct {
 }
 
 func initialModel() model {
+	textInput := textinput.New()
+	textInput.Placeholder = "Search"
+	// textInput.Prompt = ""
 	return model{
-		ready:     false,
-		workflows: []*workflow.WorkflowExecutionInfo{},
-		selected:  make(map[int]struct{}),
+		searchInput: textInput,
+		ready:       false,
+		workflows:   []*workflow.WorkflowExecutionInfo{},
+		selected:    make(map[int]struct{}),
 		upToDateWorkflowCount: map[temporalEnums.WorkflowExecutionStatus]int64{
 			temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED: 0,
 			temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED:    0,
@@ -184,8 +221,8 @@ func initialModel() model {
 }
 
 func (m model) View() string {
-	m.viewport.SetContent(m.renderTable(m.workflows))
-	return m.viewport.View()
+	view := m.renderHeader() + "\n" + m.renderTable(m.workflows) + "\n" + m.renderFooter()
+	return view
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -220,6 +257,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, m.updateVisibleWorkflowsBackgroundCmd()
+
 	case updateWorkflowsMsg:
 		m.workflows = msg.workflows
 		return m, nil
