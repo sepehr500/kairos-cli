@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -18,6 +20,86 @@ import (
 	"strings"
 	"time"
 )
+
+func formatNumber(number int) string {
+	switch {
+	case number > 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(number)/1_000_000)
+	case number > 1_000:
+		return fmt.Sprintf("%.1fK", float64(number)/1_000)
+	default:
+		return fmt.Sprintf("%d", number)
+	}
+}
+
+// ========================================
+// Keybindings
+// ========================================
+
+type KeyMap struct {
+	Up                    key.Binding
+	Down                  key.Binding
+	SearchWorkflowType    key.Binding
+	SearchWorkflowId      key.Binding
+	SearchExecutionStatus key.Binding
+	Help                  key.Binding
+	Exit                  key.Binding
+	ClearSearch           key.Binding
+	RefetchWorkflows      key.Binding
+}
+
+var DefaultKeyMap = KeyMap{
+	Up: key.NewBinding(
+		key.WithKeys("k", "up"),        // actual keybindings
+		key.WithHelp("↑/k", "move up"), // corresponding help text
+	),
+	Down: key.NewBinding(
+		key.WithKeys("j", "down"),
+		key.WithHelp("↓/j", "move down"),
+	),
+	SearchWorkflowType: key.NewBinding(
+		key.WithKeys("w", "search Type"),
+		key.WithHelp("w", "search Type"),
+	),
+	SearchWorkflowId: key.NewBinding(
+		key.WithKeys("i", "search WorkflowId"),
+		key.WithHelp("i", "search WorkflowId"),
+	),
+	SearchExecutionStatus: key.NewBinding(
+		key.WithKeys("s", "search Status"),
+		key.WithHelp("s", "search Status"),
+	),
+	Help: key.NewBinding(
+		key.WithKeys("?"),
+		key.WithHelp("?", "toggle help"),
+	),
+	Exit: key.NewBinding(
+		key.WithKeys("ctrl+c"),
+		key.WithHelp("ctrl+c", "exit"),
+	),
+	ClearSearch: key.NewBinding(
+		key.WithKeys("c"),
+		key.WithHelp("c", "clear"),
+	),
+	RefetchWorkflows: key.NewBinding(
+		key.WithKeys("r"),
+		key.WithHelp("r", "refetch"),
+	),
+}
+
+// ShortHelp returns keybindings to be shown in the mini help view. It's part
+// of the key.Map interface.
+func (k KeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Up, k.Down, k.SearchWorkflowType, k.SearchWorkflowId, k.SearchExecutionStatus, k.Help, k.ClearSearch, k.RefetchWorkflows}
+}
+
+// FullHelp returns keybindings for the expanded help view. It's part of the
+// key.Map interface.
+func (k KeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{k.Up, k.Down, k.SearchWorkflowType},
+	}
+}
 
 // ========================================
 // Status Styles
@@ -97,17 +179,17 @@ type retrievedSearchOptionsMsg struct {
 type activeSearchParams map[searchMode][]string
 
 func (m model) handleSearchModeSelect(msg tea.KeyMsg) model {
-	if msg.String() == "w" {
+	if key.Matches(msg, m.keys.SearchWorkflowType) {
 		m.searchMode = WORKFLOWTYPE
 		m.searchInput.Prompt = "Search WorkflowType: "
 		m.searchInput.Focus()
 	}
-	if msg.String() == "i" {
+	if key.Matches(msg, m.keys.SearchWorkflowId) {
 		m.searchMode = WORKFLOWID
 		m.searchInput.Focus()
 		m.searchInput.Prompt = "Search WorkflowId: "
 	}
-	if msg.String() == "s" {
+	if key.Matches(msg, m.keys.SearchExecutionStatus) {
 		m.searchMode = EXECUTIONSTATUS
 		m.searchInput.Prompt = "Search WorkflowStatus: "
 		m.searchInput.Focus()
@@ -209,8 +291,9 @@ func (m model) constructQueryString() string {
 }
 
 func (m model) renderFooter() string {
+	helpView := m.help.View(m.keys)
 	if m.searchMode == "" {
-		return ""
+		return helpView
 	}
 	textInputWrapperStyle := textInputWrapperStyle.Width(m.viewport.Width)
 	searchInputStyle := m.searchInput.View()
@@ -223,7 +306,7 @@ func (m model) renderFooter() string {
 // ========================================
 
 var HeaderStyle = lipgloss.NewStyle().Padding(0, 0).Bold(true)
-var EvenRowStyle = lipgloss.NewStyle().Padding(0, 0).Background(lipgloss.Color("#3b3b3b"))
+var EvenRowStyle = lipgloss.NewStyle().Padding(0, 0).Background(lipgloss.Color("#222222"))
 var OddRowStyle = lipgloss.NewStyle().Padding(0, 0)
 
 func (m model) renderHeader() string {
@@ -241,7 +324,7 @@ func (m model) renderHeader() string {
 		count := m.upToDateWorkflowCount[temporalEnums.WorkflowExecutionStatus(statusInt)]
 		currentCountStyle := lipgloss.NewStyle()
 		styleStruct := statusToStyleMap[status]
-		rawCountStr := fmt.Sprintf("%s %s: %d ", styleStruct.icon, styleStruct.displayName, count)
+		rawCountStr := fmt.Sprintf("%s %s: %s ", styleStruct.icon, styleStruct.displayName, formatNumber(int(count)))
 		renderedStr := currentCountStyle.Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(styleStruct.color)).Render(rawCountStr)
 		styleStrArray = append(styleStrArray, renderedStr)
 	}
@@ -255,7 +338,13 @@ func (m model) renderTable(workflows []*workflow.WorkflowExecutionInfo) string {
 
 	tableSurroundStyle := lipgloss.NewStyle().Padding(0, 0).Height(m.viewport.Height - SEARCH_INPUT_HEIGHT - HEADER_HEIGHT)
 	t := table.New().
-		Border(lipgloss.HiddenBorder()).
+		Border(lipgloss.RoundedBorder()).
+		BorderRight(false).
+		BorderLeft(false).
+		BorderTop(false).
+		BorderBottom(false).
+		BorderHeader(true).
+		BorderColumn(true).
 		Width(m.viewport.Width).
 		StyleFunc(func(row, col int) lipgloss.Style {
 			switch {
@@ -270,10 +359,10 @@ func (m model) renderTable(workflows []*workflow.WorkflowExecutionInfo) string {
 		Headers("Status", "Type", "Id", "Start Time", "Close Time")
 	for _, w := range workflows {
 		workflowId := w.GetExecution().WorkflowId
-		startTime := w.GetStartTime().AsTime().Format(time.RFC3339)
-		closeTime := w.GetCloseTime().AsTime().Format(time.RFC3339)
+		startTime := w.GetStartTime().AsTime().In(time.Local).Format(time.RFC3339)
+		closeTime := w.GetCloseTime().AsTime().In(time.Local).Format(time.RFC3339)
 		// If close time starts with 1970, it means the workflow is still running and has no close time
-		if closeTime[:4] == "1970" {
+		if w.GetStatus().String() == "Running" {
 			closeTime = "--"
 		}
 		statusIcon := statusToStyleMap[w.GetStatus().String()].icon
@@ -391,6 +480,8 @@ const (
 )
 
 type model struct {
+	keys                       KeyMap
+	help                       help.Model
 	activeSearchParams         activeSearchParams
 	searchMode                 searchMode
 	searchOptions              []string
@@ -414,6 +505,8 @@ func initialModel() model {
 	activeSearchParams[WORKFLOWID] = []string{}
 	activeSearchParams[EXECUTIONSTATUS] = []string{}
 	return model{
+		keys:               DefaultKeyMap,
+		help:               help.New(),
 		activeSearchParams: activeSearchParams,
 		searchInput:        textInput,
 		ready:              false,
@@ -443,6 +536,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
+		m.help.Width = msg.Width
 		if !m.ready {
 			m.viewport = viewport.New(msg.Width, msg.Height)
 			m.viewport.YPosition = 0
@@ -488,38 +582,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m = m.handleSearchModeSelect(msg)
 
-		switch msg.String() {
+		switch {
+		case key.Matches(msg, m.keys.Help):
+			m.help.ShowAll = !m.help.ShowAll
 		// Reset the search params if c is pressed
-		case "c":
+		case key.Matches(msg, m.keys.ClearSearch):
 			m.activeSearchParams = make(map[searchMode][]string)
 			return m, m.refetchWorkflowsCmd()
-		case "r":
+		case key.Matches(msg, m.keys.RefetchWorkflows):
 			return m, m.refetchWorkflowsCmd()
 		// These keys should exit the program.
-		case "ctrl+c", "q":
+		case key.Matches(msg, m.keys.Exit):
 			return m, tea.Quit
-
-		// The "up" and "k" keys move the cursor up
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-
-		// The "down" and "j" keys move the cursor down
-		case "down", "j":
-			if m.cursor < len(m.workflows)-1 {
-				m.cursor++
-			}
-
-		// The "enter" key and the spacebar (a literal space) toggle
-		// the selected state for the item that the cursor is pointing at.
-		case "enter", " ":
-			_, ok := m.selected[m.cursor]
-			if ok {
-				delete(m.selected, m.cursor)
-			} else {
-				m.selected[m.cursor] = struct{}{}
-			}
+			// The "enter" key and the spacebar (a literal space) toggle
+			// the selected state for the item that the cursor is pointing at.
 		}
 	}
 
