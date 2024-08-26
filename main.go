@@ -238,7 +238,7 @@ func (m model) renderHeader() string {
 	for _, status := range temporalEnumStatusList {
 		upperCaseStatus := strings.ToUpper(status)
 		statusInt := temporalEnums.WorkflowExecutionStatus_value[fmt.Sprintf("WORKFLOW_EXECUTION_STATUS_%s", upperCaseStatus)]
-		count := m.staticVisibleWorkflowCount[temporalEnums.WorkflowExecutionStatus(statusInt)]
+		count := m.upToDateWorkflowCount[temporalEnums.WorkflowExecutionStatus(statusInt)]
 		currentCountStyle := lipgloss.NewStyle()
 		styleStruct := statusToStyleMap[status]
 		rawCountStr := fmt.Sprintf("%s %s: %d ", styleStruct.icon, styleStruct.displayName, count)
