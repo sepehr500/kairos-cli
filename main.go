@@ -25,6 +25,15 @@ import (
 
 // Status String to style map
 
+var temporalEnumStatusList = []string{
+	temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING.String(),
+	temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED.String(),
+	temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED.String(),
+	temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED.String(),
+	temporalEnums.WORKFLOW_EXECUTION_STATUS_TERMINATED.String(),
+	// I removed the CONTINUED_AS_NEW status
+}
+
 type ExecutionStatusStyleInfo struct {
 	displayName string
 	icon        string
@@ -50,7 +59,7 @@ var statusToStyleMap = map[string]ExecutionStatusStyleInfo{
 	temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING.String(): {
 		displayName: "Running",
 		icon:        "🏃",
-		color:       "#00ff00",
+		color:       "#0000ff",
 	},
 	temporalEnums.WORKFLOW_EXECUTION_STATUS_TERMINATED.String(): {
 		displayName: "Terminated",
@@ -59,7 +68,7 @@ var statusToStyleMap = map[string]ExecutionStatusStyleInfo{
 		color: "#ffff00",
 	},
 	temporalEnums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW.String(): {
-		displayName: "Continued as New",
+		displayName: "Cont. New",
 		icon:        "🔄",
 		color:       "#800080",
 	},
@@ -70,7 +79,7 @@ var statusToStyleMap = map[string]ExecutionStatusStyleInfo{
 // ========================================
 const (
 	// App Header Height
-	HEADER_HEIGHT = 2
+	HEADER_HEIGHT = 4
 	// App Search Input Height
 	SEARCH_INPUT_HEIGHT = 1
 )
@@ -218,14 +227,28 @@ var EvenRowStyle = lipgloss.NewStyle().Padding(0, 0).Background(lipgloss.Color("
 var OddRowStyle = lipgloss.NewStyle().Padding(0, 0)
 
 func (m model) renderHeader() string {
-	totalRunning := m.upToDateWorkflowCount[temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING]
-	totalCompleted := m.upToDateWorkflowCount[temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED]
 	headerStyle := lipgloss.NewStyle().Padding(0, 0).Width(m.viewport.Width).Height(HEADER_HEIGHT)
 	queryStringStyle := lipgloss.NewStyle().Padding(0, 0).Width(m.viewport.Width).Height(1)
-	countStyle := lipgloss.NewStyle().Padding(0, 0).Width(m.viewport.Width).Height(1)
-	countStr := fmt.Sprintf("Total Running: %d Total Completed: %d", totalRunning, totalCompleted)
+	// Construct the count string
 	currentQuery := m.constructQueryString()
-	return headerStyle.Render(countStyle.Render(countStr) + "\n" + queryStringStyle.Render(currentQuery))
+	// Order the upToDateWorkflowCount map by the order of the temporalEnums
+	// This is to ensure that the order of the counts is consistent
+
+	styleStrArray := []string{}
+	for _, status := range temporalEnumStatusList {
+		upperCaseStatus := strings.ToUpper(status)
+		statusInt := temporalEnums.WorkflowExecutionStatus_value[fmt.Sprintf("WORKFLOW_EXECUTION_STATUS_%s", upperCaseStatus)]
+		count := m.staticVisibleWorkflowCount[temporalEnums.WorkflowExecutionStatus(statusInt)]
+		currentCountStyle := lipgloss.NewStyle()
+		styleStruct := statusToStyleMap[status]
+		rawCountStr := fmt.Sprintf("%s %s: %d ", styleStruct.icon, styleStruct.displayName, count)
+		renderedStr := currentCountStyle.Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(styleStruct.color)).Render(rawCountStr)
+		styleStrArray = append(styleStrArray, renderedStr)
+	}
+
+	row := lipgloss.JoinHorizontal(lipgloss.Top, styleStrArray...)
+
+	return headerStyle.Render(row + "\n" + queryStringStyle.Render(currentQuery))
 }
 
 func (m model) renderTable(workflows []*workflow.WorkflowExecutionInfo) string {
@@ -398,11 +421,13 @@ func initialModel() model {
 		selected:           make(map[int]struct{}),
 		upToDateWorkflowCount: map[temporalEnums.WorkflowExecutionStatus]int64{
 			temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED: 0,
+			temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING:   0,
 			temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED:    0,
 			temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED:  0,
 		},
 		staticVisibleWorkflowCount: map[temporalEnums.WorkflowExecutionStatus]int64{
 			temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED: 0,
+			temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING:   0,
 			temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED:    0,
 			temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED:  0,
 		},
