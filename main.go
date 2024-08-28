@@ -3,6 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
+	"strings"
+	"time"
+
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -15,10 +20,6 @@ import (
 	"go.temporal.io/api/workflowservice/v1"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
-	"log"
-	"os"
-	"strings"
-	"time"
 )
 
 func formatNumber(number int) string {
@@ -46,6 +47,8 @@ type KeyMap struct {
 	Exit                  key.Binding
 	ClearSearch           key.Binding
 	RefetchWorkflows      key.Binding
+	Select                key.Binding
+	OpenWorkflowInWeb     key.Binding
 }
 
 var DefaultKeyMap = KeyMap{
@@ -84,6 +87,14 @@ var DefaultKeyMap = KeyMap{
 	RefetchWorkflows: key.NewBinding(
 		key.WithKeys("r"),
 		key.WithHelp("r", "refetch"),
+	),
+	Select: key.NewBinding(
+		key.WithKeys("enter", "space"),
+		key.WithHelp("enter/space", "toggle selection"),
+	),
+	OpenWorkflowInWeb: key.NewBinding(
+		key.WithKeys("o"),
+		key.WithHelp("o", "open in web"),
 	),
 }
 
@@ -334,6 +345,8 @@ func (m model) renderHeader() string {
 	return headerStyle.Render(row + "\n" + queryStringStyle.Render(currentQuery))
 }
 
+var highlightedStatusIconStyle = lipgloss.NewStyle().Background(lipgloss.Color("#0000ff")).Foreground(lipgloss.Color("#ffffff"))
+
 func (m model) renderTable(workflows []*workflow.WorkflowExecutionInfo) string {
 
 	tableSurroundStyle := lipgloss.NewStyle().Padding(0, 0).Height(m.viewport.Height - SEARCH_INPUT_HEIGHT - HEADER_HEIGHT)
@@ -357,8 +370,8 @@ func (m model) renderTable(workflows []*workflow.WorkflowExecutionInfo) string {
 			}
 		}).
 		Headers("Status", "Type", "Id", "Start Time", "Close Time")
-	for _, w := range workflows {
-		workflowId := w.GetExecution().WorkflowId
+	for i, w := range workflows {
+		workflowId := w.Execution.WorkflowId
 		startTime := w.GetStartTime().AsTime().In(time.Local).Format(time.RFC3339)
 		closeTime := w.GetCloseTime().AsTime().In(time.Local).Format(time.RFC3339)
 		// If close time starts with 1970, it means the workflow is still running and has no close time
@@ -366,12 +379,14 @@ func (m model) renderTable(workflows []*workflow.WorkflowExecutionInfo) string {
 			closeTime = "--"
 		}
 		statusIcon := statusToStyleMap[w.GetStatus().String()].icon
+		if m.cursor == i {
+			statusIcon = highlightedStatusIconStyle.Render(statusIcon)
+		}
+
 		t.Row(statusIcon, w.GetType().Name, workflowId, startTime, closeTime)
 	}
 	return tableSurroundStyle.Render(t.Render())
 }
-
-// https://github.com/achannarasappa/ticker/blob/master/internal/ui/ui.go#L64
 
 type backgroundUpdateWorkflowCountMsg struct {
 	executionStatus temporalEnums.WorkflowExecutionStatus
@@ -489,7 +504,7 @@ type model struct {
 	ready                      bool
 	workflows                  []*workflow.WorkflowExecutionInfo // items on the to-do list
 	cursor                     int                               // which to-do list item our cursor is pointing at
-	selected                   map[int]struct{}                  // which to-do items are selected
+	selected                   map[int]bool
 	viewport                   viewport.Model
 	staticVisibleWorkflowCount map[temporalEnums.WorkflowExecutionStatus]int64
 	// This is the workflow count that is up to date in the background
@@ -505,13 +520,14 @@ func initialModel() model {
 	activeSearchParams[WORKFLOWID] = []string{}
 	activeSearchParams[EXECUTIONSTATUS] = []string{}
 	return model{
+		cursor:             0,
 		keys:               DefaultKeyMap,
 		help:               help.New(),
 		activeSearchParams: activeSearchParams,
 		searchInput:        textInput,
 		ready:              false,
 		workflows:          []*workflow.WorkflowExecutionInfo{},
-		selected:           make(map[int]struct{}),
+		selected:           make(map[int]bool),
 		upToDateWorkflowCount: map[temporalEnums.WorkflowExecutionStatus]int64{
 			temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED: 0,
 			temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING:   0,
@@ -583,6 +599,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.handleSearchModeSelect(msg)
 
 		switch {
+		case key.Matches(msg, m.keys.OpenWorkflowInWeb):
+			if m.cursor < len(m.workflows) {
+				workflowId := m.workflows[m.cursor].GetExecution().WorkflowId
+				runId := m.workflows[m.cursor].Execution.GetRunId()
+				openWorkflowInBrowser(workflowId, runId)
+			}
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll
 		// Reset the search params if c is pressed
@@ -596,6 +618,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 			// The "enter" key and the spacebar (a literal space) toggle
 			// the selected state for the item that the cursor is pointing at.
+		case key.Matches(msg, m.keys.Up):
+			if m.cursor > 0 {
+				m.cursor--
+			}
+
+		case key.Matches(msg, m.keys.Down):
+			if m.cursor < len(m.workflows)-1 {
+				m.cursor++
+			}
+		case key.Matches(msg, m.keys.Select):
+			if m.cursor < len(m.workflows) {
+				m.selected[m.cursor] = true
+			}
 		}
 	}
 
