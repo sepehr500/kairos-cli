@@ -4,18 +4,17 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
-	"fmt"
 	"log"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 
 	"sync"
 
 	"github.com/BurntSushi/toml"
 	"go.temporal.io/api/history/v1"
-	"go.temporal.io/api/workflow/v1"
-	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	tlog "go.temporal.io/sdk/log"
 )
@@ -37,7 +36,7 @@ type (
 	}
 )
 
-func getTemporalClient() (client.Client, error) {
+func getTemporalConfig() TomlConfig {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		log.Fatal("Error fetching home directory:", err)
@@ -49,6 +48,12 @@ func getTemporalClient() (client.Client, error) {
 	if _, err := toml.DecodeFile(f, &config); err != nil {
 		log.Fatal(err)
 	}
+	return config
+
+}
+
+func getTemporalClient() (client.Client, error) {
+	config := getTemporalConfig()
 
 	cert, err := tls.X509KeyPair([]byte(config.Namespace["default"].TemporalPublicKey), []byte(config.Namespace["default"].TemporalPrivateKey))
 	if err != nil {
@@ -82,23 +87,30 @@ func getTemporalClient() (client.Client, error) {
 	return temporalClient, nil
 }
 
-func listWorkflows(workflowName string) []*workflow.WorkflowExecutionInfo {
-
-	temporalClient, _ := getTemporalClient()
-
-	query := fmt.Sprintf("WorkflowType BETWEEN \"%s\" AND \"%s~\" AND CloseTime is null", workflowName, workflowName)
-	if workflowName == "" {
-		query = "CloseTime is null"
+func openWorkflowInBrowser(workflowID string, runID string) {
+	config := getTemporalConfig()
+	url := "https://cloud.temporal.io" + "/namespaces/" + config.Namespace["default"].TemporalNamespace + "/workflows/" + workflowID + "/" + runID + "/history"
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		return
 	}
-	result, err := temporalClient.ListWorkflow(context.Background(), &workflowservice.ListWorkflowExecutionsRequest{
-		Query:    query,
-		PageSize: 20,
-	})
+
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+
+	err := cmd.Start()
+
 	if err != nil {
-		log.Fatalf("Failed to list workflows: %v", err)
+		log.Fatalf("Failed to open browser: %v", err)
 	}
 
-	return result.GetExecutions()
 }
 
 func KickoffWorkflow(workflowName string, payload string) (string, error) {
