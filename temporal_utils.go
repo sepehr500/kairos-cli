@@ -24,17 +24,24 @@ var (
 	once           sync.Once
 )
 
+type NamespaceInfo struct {
+	TemporalCloudHost  string `toml:"temporal_cloud_host"`
+	TemporalNamespace  string `toml:"temporal_namespace"`
+	TemporalPrivateKey string `toml:"temporal_private_key"`
+	TemporalPublicKey  string `toml:"temporal_public_key"`
+}
+
 type (
 	// Config struct
 	TomlConfig struct {
-		Namespace map[string]struct {
-			TemporalCloudHost  string `toml:"temporal_cloud_host"`
-			TemporalNamespace  string `toml:"temporal_namespace"`
-			TemporalPrivateKey string `toml:"temporal_private_key"`
-			TemporalPublicKey  string `toml:"temporal_public_key"`
-		} `toml:"namespace"`
+		Namespace map[string]NamespaceInfo `toml:"namespace"`
 	}
 )
+
+func getDefaultNamespaceInfo() NamespaceInfo {
+	config := getTemporalConfig()
+	return config.Namespace["default"]
+}
 
 func getTemporalConfig() TomlConfig {
 	homeDir, err := os.UserHomeDir()

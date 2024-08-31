@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
+	"go.temporal.io/api/common/v1"
 	temporalEnums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
@@ -49,6 +51,8 @@ type KeyMap struct {
 	RefetchWorkflows      key.Binding
 	Select                key.Binding
 	OpenWorkflowInWeb     key.Binding
+	TerminateWorkflow     key.Binding
+	RestartWorkflow       key.Binding
 }
 
 var DefaultKeyMap = KeyMap{
@@ -95,6 +99,14 @@ var DefaultKeyMap = KeyMap{
 	OpenWorkflowInWeb: key.NewBinding(
 		key.WithKeys("o"),
 		key.WithHelp("o", "open in web"),
+	),
+	TerminateWorkflow: key.NewBinding(
+		key.WithKeys("t"),
+		key.WithHelp("t", "terminate workflow"),
+	),
+	RestartWorkflow: key.NewBinding(
+		key.WithKeys("R"),
+		key.WithHelp("R", "restart workflow"),
 	),
 }
 
@@ -165,6 +177,38 @@ var statusToStyleMap = map[string]ExecutionStatusStyleInfo{
 		icon:        "🔄",
 		color:       "#800080",
 	},
+}
+
+// ========================================
+// Confirmation Message Flow
+// ========================================
+
+type confirmationFlowStateEnums string
+
+const (
+	NO_FLOW_RUNNING       confirmationFlowStateEnums = "NO_FLOW_RUNNING"
+	AWAITING_CONFIRMATION confirmationFlowStateEnums = "AWAITING_CONFIRMATION"
+	EXECUTING_ACTION      confirmationFlowStateEnums = "EXECUTING_ACTION"
+	ACTION_COMPLETED      confirmationFlowStateEnums = "ACTION_COMPLETED"
+)
+
+type confirmationFlowStateMsg struct {
+	state                         confirmationFlowStateEnums
+	pendingConfirmationMessage    string
+	executionSuccessMessage       string
+	areYouSureMessage             string
+	commandThatRunsOnConfirmation tea.Cmd
+}
+
+func (m model) startConfirmationMessageFlowCmd(confirmationFlowStateMsg confirmationFlowStateMsg) tea.Cmd {
+	return func() tea.Msg {
+		confirmationFlowStateMsg.state = AWAITING_CONFIRMATION
+		return func() tea.Msg {
+			confirmationFlowStateMsg.commandThatRunsOnConfirmation()
+			confirmationFlowStateMsg.state = ACTION_COMPLETED
+			return confirmationFlowStateMsg
+		}
+	}
 }
 
 // ========================================
@@ -302,6 +346,16 @@ func (m model) constructQueryString() string {
 }
 
 func (m model) renderFooter() string {
+	if m.confirmationFlowState.state == EXECUTING_ACTION {
+		return m.confirmationFlowState.pendingConfirmationMessage + "..."
+	}
+	if m.confirmationFlowState.state == ACTION_COMPLETED {
+		println("ACTION COMPLETED")
+		return m.confirmationFlowState.executionSuccessMessage
+	}
+	if m.confirmationFlowState.state == AWAITING_CONFIRMATION {
+		return m.confirmationFlowState.areYouSureMessage + " (y/n)"
+	}
 	helpView := m.help.View(m.keys)
 	if m.searchMode == "" {
 		return helpView
@@ -315,6 +369,75 @@ func (m model) renderFooter() string {
 // ========================================
 // Table Logic and Rendering
 // ========================================
+
+type actionCompletedMsg struct{}
+
+type confirmationMessageMsg struct {
+	isPerformingActionMessage string
+	message                   string
+	confirmationCommand       tea.Cmd
+}
+
+type clearCompletionMessageMsg struct{}
+
+func (m model) clearCompletionCmd() tea.Cmd {
+	return tea.Tick(time.Second*3, func(_ time.Time) tea.Msg {
+		m.confirmationFlowState.state = NO_FLOW_RUNNING
+		return m
+	})
+
+}
+
+func (m model) restartWorkflowCmd(workflowId string, runId string) tea.Cmd {
+	restartWorkflowCmd := func() tea.Msg {
+		temporalClient, _ := getTemporalClient()
+		namespaceInfo := getDefaultNamespaceInfo()
+		namespace := namespaceInfo.TemporalNamespace
+		_, err := temporalClient.ResetWorkflowExecution(context.Background(),
+			&workflowservice.ResetWorkflowExecutionRequest{
+				Namespace: namespace,
+				WorkflowExecution: &common.WorkflowExecution{
+					WorkflowId: workflowId,
+					RunId:      runId,
+				},
+				Reason:                    "CLI Restart",
+				WorkflowTaskFinishEventId: 5,
+			},
+		)
+		if err != nil {
+			log.Fatalf("Failed to restart workflow: %v", err)
+		}
+		return nil
+	}
+	return func() tea.Msg {
+		return confirmationFlowStateMsg{
+			state:                         AWAITING_CONFIRMATION,
+			executionSuccessMessage:       "Workflow restarted successfully",
+			areYouSureMessage:             fmt.Sprintf("Are you sure you want to restart workflow %s?", workflowId),
+			pendingConfirmationMessage:    "Are you sure you want to restart this workflow?",
+			commandThatRunsOnConfirmation: restartWorkflowCmd,
+		}
+	}
+}
+
+func (m model) terminateWorkflowCmd(workflowId string, runId string) tea.Cmd {
+	termanateWorkflowCmd := func() tea.Msg {
+		temporalClient, _ := getTemporalClient()
+		err := temporalClient.TerminateWorkflow(context.Background(), workflowId, runId, "CLI Termination")
+		if err != nil {
+			log.Fatalf("Failed to terminate workflow: %v", err)
+		}
+		return nil
+	}
+	return func() tea.Msg {
+		return confirmationFlowStateMsg{
+			state:                         AWAITING_CONFIRMATION,
+			areYouSureMessage:             fmt.Sprintf("Are you sure you want to terminate workflow %s?", workflowId),
+			pendingConfirmationMessage:    "Are you sure you want to terminate this workflow?",
+			commandThatRunsOnConfirmation: termanateWorkflowCmd,
+		}
+	}
+}
 
 var HeaderStyle = lipgloss.NewStyle().Padding(0, 0).Bold(true)
 var EvenRowStyle = lipgloss.NewStyle().Padding(0, 0).Background(lipgloss.Color("#222222"))
@@ -347,7 +470,7 @@ func (m model) renderHeader() string {
 
 var highlightedStatusIconStyle = lipgloss.NewStyle().Background(lipgloss.Color("#0000ff")).Foreground(lipgloss.Color("#ffffff"))
 
-func (m model) renderTable(workflows []*workflow.WorkflowExecutionInfo) string {
+func (m model) renderTable(workflows []*workflowTableListItem) string {
 
 	tableSurroundStyle := lipgloss.NewStyle().Padding(0, 0).Height(m.viewport.Height - SEARCH_INPUT_HEIGHT - HEADER_HEIGHT)
 	t := table.New().
@@ -369,21 +492,21 @@ func (m model) renderTable(workflows []*workflow.WorkflowExecutionInfo) string {
 				return OddRowStyle
 			}
 		}).
-		Headers("Status", "Type", "Id", "Start Time", "Close Time")
+		Headers("Status", "Type", "Id", "Start Time", "Close Time", "Attempts")
 	for i, w := range workflows {
-		workflowId := w.Execution.WorkflowId
-		startTime := w.GetStartTime().AsTime().In(time.Local).Format(time.RFC3339)
-		closeTime := w.GetCloseTime().AsTime().In(time.Local).Format(time.RFC3339)
+		workflowId := w.workflow.Execution.WorkflowId
+		startTime := w.workflow.GetStartTime().AsTime().In(time.Local).Format(time.RFC3339)
+		closeTime := w.workflow.GetCloseTime().AsTime().In(time.Local).Format(time.RFC3339)
 		// If close time starts with 1970, it means the workflow is still running and has no close time
-		if w.GetStatus().String() == "Running" {
+		if w.workflow.GetStatus().String() == "Running" {
 			closeTime = "--"
 		}
-		statusIcon := statusToStyleMap[w.GetStatus().String()].icon
+		statusIcon := statusToStyleMap[w.workflow.GetStatus().String()].icon
 		if m.cursor == i {
 			statusIcon = highlightedStatusIconStyle.Render(statusIcon)
 		}
 
-		t.Row(statusIcon, w.GetType().Name, workflowId, startTime, closeTime)
+		t.Row(statusIcon, w.workflow.GetType().Name, workflowId, startTime, closeTime, strconv.Itoa(int(w.attempts)))
 	}
 	return tableSurroundStyle.Render(t.Render())
 }
@@ -406,7 +529,7 @@ func (m model) backgroundUpdateWorkflowCountCmd(exeuctionStatus temporalEnums.Wo
 }
 
 type updateWorkflowsMsg struct {
-	workflows []*workflow.WorkflowExecutionInfo
+	workflows []*workflowTableListItem
 }
 
 func (m model) refetchWorkflowsCmd() tea.Cmd {
@@ -421,8 +544,35 @@ func (m model) refetchWorkflowsCmd() tea.Cmd {
 			log.Fatalf("Failed to list workflows: %v", err)
 		}
 		result := queryResult.GetExecutions()
-		return updateWorkflowsMsg{workflows: result}
+		returnObj := []*workflowTableListItem{}
+		for _, workflow := range result {
+			listItem := &workflowTableListItem{workflow: workflow, attempts: 0}
+			if workflow.GetStatus() == temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING {
 
+				execution, err := temporalClient.DescribeWorkflowExecution(
+					context.Background(),
+					workflow.GetExecution().WorkflowId,
+					workflow.GetExecution().RunId,
+				)
+				if err != nil {
+					break
+				}
+
+				pendingActivities := execution.GetPendingActivities()
+				// Nested loop. We break out of the loop if we find an activity with an attempt > 0
+				// The append below will alows run
+				for _, activity := range pendingActivities {
+					if activity.GetAttempt() > 0 {
+						listItem.attempts = activity.GetAttempt()
+						listItem.workflow = workflow
+						break
+					}
+				}
+
+			}
+			returnObj = append(returnObj, listItem)
+		}
+		return updateWorkflowsMsg{workflows: returnObj}
 	}
 }
 
@@ -435,8 +585,8 @@ func (m model) updateVisibleWorkflowsBackgroundCmd() tea.Cmd {
 		temporalClient, _ := getTemporalClient()
 		currentRunningExecutionIds := []string{}
 		for _, execution := range m.workflows {
-			if execution.GetCloseTime() == nil {
-				currentRunningExecutionIds = append(currentRunningExecutionIds, "'"+execution.GetExecution().WorkflowId+"'")
+			if execution.workflow.GetCloseTime() == nil {
+				currentRunningExecutionIds = append(currentRunningExecutionIds, "'"+execution.workflow.GetExecution().WorkflowId+"'")
 			}
 		}
 		if len(currentRunningExecutionIds) == 0 {
@@ -494,7 +644,13 @@ const (
 	EXECUTIONSTATUS searchMode = "ExecutionStatus"
 )
 
+type workflowTableListItem struct {
+	workflow *workflow.WorkflowExecutionInfo
+	attempts int32
+}
+
 type model struct {
+	confirmationFlowState      confirmationFlowStateMsg
 	keys                       KeyMap
 	help                       help.Model
 	activeSearchParams         activeSearchParams
@@ -502,8 +658,8 @@ type model struct {
 	searchOptions              []string
 	searchInput                textinput.Model
 	ready                      bool
-	workflows                  []*workflow.WorkflowExecutionInfo // items on the to-do list
-	cursor                     int                               // which to-do list item our cursor is pointing at
+	workflows                  []*workflowTableListItem
+	cursor                     int // which to-do list item our cursor is pointing at
 	selected                   map[int]bool
 	viewport                   viewport.Model
 	staticVisibleWorkflowCount map[temporalEnums.WorkflowExecutionStatus]int64
@@ -520,13 +676,20 @@ func initialModel() model {
 	activeSearchParams[WORKFLOWID] = []string{}
 	activeSearchParams[EXECUTIONSTATUS] = []string{}
 	return model{
+		confirmationFlowState: confirmationFlowStateMsg{
+			state:                         NO_FLOW_RUNNING,
+			pendingConfirmationMessage:    "",
+			areYouSureMessage:             "",
+			executionSuccessMessage:       "",
+			commandThatRunsOnConfirmation: func() tea.Msg { return nil },
+		},
 		cursor:             0,
 		keys:               DefaultKeyMap,
 		help:               help.New(),
 		activeSearchParams: activeSearchParams,
 		searchInput:        textInput,
 		ready:              false,
-		workflows:          []*workflow.WorkflowExecutionInfo{},
+		workflows:          []*workflowTableListItem{},
 		selected:           make(map[int]bool),
 		upToDateWorkflowCount: map[temporalEnums.WorkflowExecutionStatus]int64{
 			temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED: 0,
@@ -564,6 +727,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		}
 
+	case confirmationFlowStateMsg:
+		m.confirmationFlowState = msg
+		switch msg.state {
+		case NO_FLOW_RUNNING, AWAITING_CONFIRMATION, EXECUTING_ACTION:
+			m.confirmationFlowState = msg
+			return m, nil
+		case ACTION_COMPLETED:
+			m.confirmationFlowState = msg
+			return m, m.clearCompletionCmd()
+		}
+		return m, nil
+
 	case updateWorkflowCountMsg:
 		m.staticVisibleWorkflowCount[msg.executionStatus] = msg.count
 		return m, nil
@@ -575,8 +750,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Look for workflows that are in the current list and update them
 		for _, updatedWorkflow := range msg.workflows {
 			for i, currentWorkflow := range m.workflows {
-				if updatedWorkflow.GetExecution().WorkflowId == currentWorkflow.GetExecution().WorkflowId {
-					m.workflows[i] = updatedWorkflow
+				if updatedWorkflow.GetExecution().WorkflowId == currentWorkflow.workflow.GetExecution().WorkflowId {
+					m.workflows[i].workflow = updatedWorkflow
 				}
 			}
 		}
@@ -592,6 +767,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Is it a key press?
 	case tea.KeyMsg:
+		if m.confirmationFlowState.state == AWAITING_CONFIRMATION {
+			if msg.String() == "y" {
+				m.confirmationFlowState.state = EXECUTING_ACTION
+				// Wramp the command to set the state to action completed
+				wrappedFunc := func() tea.Msg {
+					m.confirmationFlowState.commandThatRunsOnConfirmation()
+					m.confirmationFlowState.state = ACTION_COMPLETED
+					return m.confirmationFlowState
+				}
+				return m, wrappedFunc
+			}
+			if msg.String() == "n" {
+				m.confirmationFlowState.state = NO_FLOW_RUNNING
+				return m, nil
+			}
+		}
 		if m.searchInput.Focused() {
 			return m.handleSearchUpdate(msg)
 		}
@@ -599,10 +790,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.handleSearchModeSelect(msg)
 
 		switch {
+		case key.Matches(msg, m.keys.RestartWorkflow):
+			if m.cursor < len(m.workflows) {
+				workflowId := m.workflows[m.cursor].workflow.GetExecution().WorkflowId
+				runId := m.workflows[m.cursor].workflow.Execution.GetRunId()
+				return m, m.restartWorkflowCmd(workflowId, runId)
+			}
+
+		case key.Matches(msg, m.keys.TerminateWorkflow):
+			if m.cursor < len(m.workflows) {
+				workflowId := m.workflows[m.cursor].workflow.GetExecution().WorkflowId
+				runId := m.workflows[m.cursor].workflow.Execution.GetRunId()
+				return m, m.terminateWorkflowCmd(workflowId, runId)
+			}
 		case key.Matches(msg, m.keys.OpenWorkflowInWeb):
 			if m.cursor < len(m.workflows) {
-				workflowId := m.workflows[m.cursor].GetExecution().WorkflowId
-				runId := m.workflows[m.cursor].Execution.GetRunId()
+				workflowId := m.workflows[m.cursor].workflow.GetExecution().WorkflowId
+				runId := m.workflows[m.cursor].workflow.Execution.GetRunId()
 				openWorkflowInBrowser(workflowId, runId)
 			}
 		case key.Matches(msg, m.keys.Help):
