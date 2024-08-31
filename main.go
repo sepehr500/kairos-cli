@@ -113,7 +113,9 @@ var DefaultKeyMap = KeyMap{
 // ShortHelp returns keybindings to be shown in the mini help view. It's part
 // of the key.Map interface.
 func (k KeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.SearchWorkflowType, k.SearchWorkflowId, k.SearchExecutionStatus, k.Help, k.ClearSearch, k.RefetchWorkflows}
+	return []key.Binding{k.Up, k.Down, k.SearchWorkflowType, k.SearchWorkflowId, k.SearchExecutionStatus, k.Help, k.ClearSearch, k.RefetchWorkflows,
+		k.Select, k.OpenWorkflowInWeb, k.TerminateWorkflow, k.RestartWorkflow, k.Exit,
+	}
 }
 
 // FullHelp returns keybindings for the expanded help view. It's part of the
@@ -456,10 +458,6 @@ func (m model) terminateWorkflowCmd(workflowId string, runId string) tea.Cmd {
 	}
 }
 
-var HeaderStyle = lipgloss.NewStyle().Padding(0, 0).Bold(true)
-var EvenRowStyle = lipgloss.NewStyle().Padding(0, 0).Background(lipgloss.Color("#222222"))
-var OddRowStyle = lipgloss.NewStyle().Padding(0, 0)
-
 func (m model) renderHeader() string {
 	headerStyle := lipgloss.NewStyle().Padding(0, 0).Width(m.viewport.Width).Height(HEADER_HEIGHT)
 	queryStringStyle := lipgloss.NewStyle().Padding(0, 0).Width(m.viewport.Width).Height(1)
@@ -485,7 +483,14 @@ func (m model) renderHeader() string {
 	return headerStyle.Render(row + "\n" + queryStringStyle.Render(currentQuery))
 }
 
+var HeaderStyle = lipgloss.NewStyle().Padding(0, 0).Bold(true)
+var EvenRowStyle = lipgloss.NewStyle().Padding(0, 0).Background(lipgloss.Color("#222222"))
+var OddRowStyle = lipgloss.NewStyle().Padding(0, 0)
+var SelectedRowStyle = lipgloss.NewStyle().Padding(0, 0).Background(lipgloss.Color("#005500"))
+
 var highlightedStatusIconStyle = lipgloss.NewStyle().Background(lipgloss.Color("#0000ff")).Foreground(lipgloss.Color("#ffffff"))
+
+var attemptsStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff0000"))
 
 func (m model) renderTable(workflows []*workflowTableListItem) string {
 
@@ -501,6 +506,8 @@ func (m model) renderTable(workflows []*workflowTableListItem) string {
 		Width(m.viewport.Width).
 		StyleFunc(func(row, col int) lipgloss.Style {
 			switch {
+			case row == m.cursor+1:
+				return SelectedRowStyle
 			case row == 0:
 				return HeaderStyle
 			case row%2 == 0:
@@ -510,20 +517,21 @@ func (m model) renderTable(workflows []*workflowTableListItem) string {
 			}
 		}).
 		Headers("Status", "Type", "Id", "Start Time", "Close Time", "Attempts")
-	for i, w := range workflows {
+	for _, w := range workflows {
 		workflowId := w.workflow.Execution.WorkflowId
-		startTime := w.workflow.GetStartTime().AsTime().In(time.Local).Format(time.RFC3339)
 		closeTime := w.workflow.GetCloseTime().AsTime().In(time.Local).Format(time.RFC3339)
 		// If close time starts with 1970, it means the workflow is still running and has no close time
 		if w.workflow.GetStatus().String() == "Running" {
 			closeTime = "--"
 		}
-		statusIcon := statusToStyleMap[w.workflow.GetStatus().String()].icon
-		if m.cursor == i {
-			statusIcon = highlightedStatusIconStyle.Render(statusIcon)
+		attempts := strconv.Itoa(int(w.attempts))
+		if w.attempts > 3 {
+			attempts = attemptsStyle.Render(attempts)
 		}
+		statusIcon := statusToStyleMap[w.workflow.GetStatus().String()].icon
+		startTimeDiff := getRelativeTimeDiff(time.Now(), w.workflow.GetStartTime().AsTime())
 
-		t.Row(statusIcon, w.workflow.GetType().Name, workflowId, startTime, closeTime, strconv.Itoa(int(w.attempts)))
+		t.Row(statusIcon, w.workflow.GetType().Name, workflowId, startTimeDiff, closeTime, attempts)
 	}
 	return tableSurroundStyle.Render(t.Render())
 }
