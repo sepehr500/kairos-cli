@@ -6,6 +6,8 @@ import (
 )
 
 func getRelativeTimeDiff(t1, t2 time.Time) string {
+	t1 = t1.Local()
+	t2 = t2.Local()
 	diff := t1.Sub(t2)
 	if diff.Seconds() < 60 {
 		return fmt.Sprintf("%d sec ago", int(diff.Seconds()))
