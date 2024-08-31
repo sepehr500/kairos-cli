@@ -350,7 +350,6 @@ func (m model) renderFooter() string {
 		return m.confirmationFlowState.pendingConfirmationMessage + "..."
 	}
 	if m.confirmationFlowState.state == ACTION_COMPLETED {
-		println("ACTION COMPLETED")
 		return m.confirmationFlowState.executionSuccessMessage
 	}
 	if m.confirmationFlowState.state == AWAITING_CONFIRMATION {
@@ -383,7 +382,7 @@ type clearCompletionMessageMsg struct{}
 func (m model) clearCompletionCmd() tea.Cmd {
 	return tea.Tick(time.Second*3, func(_ time.Time) tea.Msg {
 		m.confirmationFlowState.state = NO_FLOW_RUNNING
-		return m
+		return m.confirmationFlowState
 	})
 
 }
@@ -392,7 +391,25 @@ func (m model) restartWorkflowCmd(workflowId string, runId string) tea.Cmd {
 	restartWorkflowCmd := func() tea.Msg {
 		temporalClient, _ := getTemporalClient()
 		namespaceInfo := getDefaultNamespaceInfo()
+		workflowHistory := temporalClient.GetWorkflowHistory(context.Background(), workflowId, runId, false, 0)
+		// Find first eventId that is  `WORKFLOW_TASK_COMPLETED`,`WORKFLOW_TASK_TIMED_OUT`, `WORKFLOW_TASK_FAILED`
+		eventId := int64(0)
+		for workflowHistory.HasNext() {
+			historyEvent, err := workflowHistory.Next()
+			if err != nil {
+				log.Fatalf("Failed to get workflow history: %v", err)
+			}
+			switch historyEvent.GetEventType() {
+			case temporalEnums.EVENT_TYPE_WORKFLOW_TASK_COMPLETED, temporalEnums.EVENT_TYPE_WORKFLOW_TASK_TIMED_OUT, temporalEnums.EVENT_TYPE_WORKFLOW_TASK_FAILED:
+				eventId = historyEvent.GetEventId()
+				break
+			}
+		}
+
 		namespace := namespaceInfo.TemporalNamespace
+		if eventId == 0 {
+			log.Fatalf("Failed to find eventId to restart workflow")
+		}
 		_, err := temporalClient.ResetWorkflowExecution(context.Background(),
 			&workflowservice.ResetWorkflowExecutionRequest{
 				Namespace: namespace,
@@ -401,7 +418,7 @@ func (m model) restartWorkflowCmd(workflowId string, runId string) tea.Cmd {
 					RunId:      runId,
 				},
 				Reason:                    "CLI Restart",
-				WorkflowTaskFinishEventId: 5,
+				WorkflowTaskFinishEventId: eventId,
 			},
 		)
 		if err != nil {
@@ -770,7 +787,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.confirmationFlowState.state == AWAITING_CONFIRMATION {
 			if msg.String() == "y" {
 				m.confirmationFlowState.state = EXECUTING_ACTION
-				// Wramp the command to set the state to action completed
+				// Wrap the command to set the state to action completed
 				wrappedFunc := func() tea.Msg {
 					m.confirmationFlowState.commandThatRunsOnConfirmation()
 					m.confirmationFlowState.state = ACTION_COMPLETED
