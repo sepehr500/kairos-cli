@@ -528,6 +528,9 @@ func (m model) renderTable(workflows []*workflowTableListItem) string {
 		if w.attempts > 3 {
 			attempts = attemptsStyle.Render(attempts)
 		}
+		if w.attempts == 0 {
+			attempts = "--"
+		}
 		statusIcon := statusToStyleMap[w.workflow.GetStatus().String()].icon
 		startTimeDiff := getRelativeTimeDiff(time.Now(), w.workflow.GetStartTime().AsTime())
 
@@ -572,6 +575,11 @@ func (m model) refetchWorkflowsCmd() tea.Cmd {
 		returnObj := []*workflowTableListItem{}
 		for _, workflow := range result {
 			listItem := &workflowTableListItem{workflow: workflow, attempts: 0}
+			// Skip if started less that 10 minutes ago
+			if workflow.GetStartTime().AsTime().UTC().After(time.Now().UTC().Add(-10 * time.Minute)) {
+				returnObj = append(returnObj, listItem)
+				continue
+			}
 			if workflow.GetStatus() == temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING {
 
 				execution, err := temporalClient.DescribeWorkflowExecution(
