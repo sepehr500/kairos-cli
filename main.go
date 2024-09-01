@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss/table"
 	"go.temporal.io/api/common/v1"
 	temporalEnums "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/history/v1"
 	"go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"golang.org/x/text/cases"
@@ -384,15 +385,35 @@ func (m model) renderFooter() string {
 // Table Logic and Rendering
 // ========================================
 
-type actionCompletedMsg struct{}
-
-type confirmationMessageMsg struct {
-	isPerformingActionMessage string
-	message                   string
-	confirmationCommand       tea.Cmd
+type workflowDetailsRecievedMsg struct {
+	details *workflowTableListItem
 }
 
-type clearCompletionMessageMsg struct{}
+func (m *model) getWorkflowDetailsCmd(tableItem *workflowTableListItem) tea.Cmd {
+	return func() tea.Msg {
+		temporalClient, _ := getTemporalClient()
+		executionDescription, err := temporalClient.DescribeWorkflowExecution(context.Background(), tableItem.workflow.Execution.GetWorkflowId(), tableItem.workflow.Execution.GetRunId())
+		historyIterator := temporalClient.GetWorkflowHistory(context.Background(), tableItem.workflow.Execution.GetWorkflowId(), tableItem.workflow.Execution.GetRunId(), false, 0)
+
+		pendingActivities := executionDescription.GetPendingActivities()
+		// Nested loop. We break out of the loop if we find an activity with an attempt > 0
+		// The append below will alows run
+		if err != nil {
+			log.Fatalf("Failed to describe workflow: %v", err)
+		}
+		history := []*history.HistoryEvent{}
+		for historyIterator.HasNext() {
+			historyEvent, err := historyIterator.Next()
+			if err != nil {
+				log.Fatalf("Failed to get workflow history: %v", err)
+			}
+			history = append(history, historyEvent)
+		}
+		tableItem.history = history
+		tableItem.pendingActivities = pendingActivities
+		return workflowDetailsRecievedMsg{details: tableItem}
+	}
+}
 
 func (m model) clearCompletionCmd() tea.Cmd {
 	return tea.Tick(time.Second*3, func(_ time.Time) tea.Msg {
@@ -692,7 +713,7 @@ const (
 
 type workflowTableListItem struct {
 	workflow          *workflow.WorkflowExecutionInfo
-	history           []*workflow.WorkflowExecutionInfo
+	history           []*history.HistoryEvent
 	pendingActivities []*workflow.PendingActivityInfo
 	attempts          int32
 }
@@ -782,6 +803,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		}
 
+	case workflowDetailsRecievedMsg:
+		// I'm not sure if this is good...but this msg just triggers rerendering
+		// since the memory is changed in the command
+		return m, nil
+
 	case confirmationFlowStateMsg:
 		m.confirmationFlowState = msg
 		switch msg.state {
@@ -848,6 +874,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.FocusWorkflow):
 			if m.cursor < len(m.workflows) {
 				m.focusViewWorkflowId = m.workflows[m.cursor].workflow.GetExecution().WorkflowId
+				return m, m.getWorkflowDetailsCmd(m.workflows[m.cursor])
 			}
 			return m, nil
 		case key.Matches(msg, m.keys.ToggleParentWorkflowMode):
