@@ -40,19 +40,21 @@ func formatNumber(number int) string {
 // ========================================
 
 type KeyMap struct {
-	Up                    key.Binding
-	Down                  key.Binding
-	SearchWorkflowType    key.Binding
-	SearchWorkflowId      key.Binding
-	SearchExecutionStatus key.Binding
-	Help                  key.Binding
-	Exit                  key.Binding
-	ClearSearch           key.Binding
-	RefetchWorkflows      key.Binding
-	Select                key.Binding
-	OpenWorkflowInWeb     key.Binding
-	TerminateWorkflow     key.Binding
-	RestartWorkflow       key.Binding
+	Up                       key.Binding
+	Down                     key.Binding
+	SearchWorkflowType       key.Binding
+	SearchWorkflowId         key.Binding
+	SearchExecutionStatus    key.Binding
+	Help                     key.Binding
+	Exit                     key.Binding
+	ClearSearch              key.Binding
+	RefetchWorkflows         key.Binding
+	Select                   key.Binding
+	OpenWorkflowInWeb        key.Binding
+	TerminateWorkflow        key.Binding
+	RestartWorkflow          key.Binding
+	ToggleParentWorkflowMode key.Binding
+	FocusWorkflow            key.Binding
 }
 
 var DefaultKeyMap = KeyMap{
@@ -107,6 +109,14 @@ var DefaultKeyMap = KeyMap{
 	RestartWorkflow: key.NewBinding(
 		key.WithKeys("R"),
 		key.WithHelp("R", "restart workflow"),
+	),
+	ToggleParentWorkflowMode: key.NewBinding(
+		key.WithKeys("p"),
+		key.WithHelp("p", "toggle parent workflow mode"),
+	),
+	FocusWorkflow: key.NewBinding(
+		key.WithKeys("f"),
+		key.WithHelp("f", "focus workflow"),
 	),
 }
 
@@ -329,6 +339,9 @@ func (m model) constructQueryString() string {
 	currentSearchParams := m.activeSearchParams
 	// Loop through the search params and construct the query string
 	queryString := ""
+	if m.parentWorkflowMode {
+		queryString = "ParentWorkflowId is null"
+	}
 	for searchMode, searchValues := range currentSearchParams {
 		if len(searchValues) == 0 {
 			continue
@@ -678,11 +691,15 @@ const (
 )
 
 type workflowTableListItem struct {
-	workflow *workflow.WorkflowExecutionInfo
-	attempts int32
+	workflow          *workflow.WorkflowExecutionInfo
+	history           []*workflow.WorkflowExecutionInfo
+	pendingActivities []*workflow.PendingActivityInfo
+	attempts          int32
 }
 
 type model struct {
+	focusViewWorkflowId        string
+	parentWorkflowMode         bool
 	confirmationFlowState      confirmationFlowStateMsg
 	keys                       KeyMap
 	help                       help.Model
@@ -709,6 +726,8 @@ func initialModel() model {
 	activeSearchParams[WORKFLOWID] = []string{}
 	activeSearchParams[EXECUTIONSTATUS] = []string{}
 	return model{
+		focusViewWorkflowId: "",
+		parentWorkflowMode:  false,
 		confirmationFlowState: confirmationFlowStateMsg{
 			state:                         NO_FLOW_RUNNING,
 			pendingConfirmationMessage:    "",
@@ -740,6 +759,9 @@ func initialModel() model {
 }
 
 func (m model) View() string {
+	if m.focusViewWorkflowId != "" {
+		return m.focusedModeView()
+	}
 	view := m.renderHeader() + "\n" + m.renderTable(m.workflows) + "\n" + m.renderFooter()
 	return view
 }
@@ -823,6 +845,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.handleSearchModeSelect(msg)
 
 		switch {
+		case key.Matches(msg, m.keys.FocusWorkflow):
+			if m.cursor < len(m.workflows) {
+				m.focusViewWorkflowId = m.workflows[m.cursor].workflow.GetExecution().WorkflowId
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.ToggleParentWorkflowMode):
+			m.parentWorkflowMode = !m.parentWorkflowMode
+			return m, m.refetchWorkflowsCmd()
 		case key.Matches(msg, m.keys.RestartWorkflow):
 			if m.cursor < len(m.workflows) {
 				workflowId := m.workflows[m.cursor].workflow.GetExecution().WorkflowId
@@ -877,7 +907,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) Init() tea.Cmd {
-	// Just return `nil`, which means "no I/O right now, please."
 	return tea.Batch(
 		m.refetchWorkflowsCmd(),
 		m.updateVisibleWorkflowsBackgroundCmd(),
