@@ -281,6 +281,7 @@ func (m model) handleSearchUpdate(msg tea.KeyMsg) (model, tea.Cmd) {
 	if msg.String() == "esc" {
 		m.searchInput.Blur()
 		m.searchMode = ""
+		m.focusViewWorkflowId = ""
 		return m, nil
 	}
 	if msg.String() == "ctrl+c" {

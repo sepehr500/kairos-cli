@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss/table"
 	temporalEnums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/history/v1"
+	"go.temporal.io/api/workflow/v1"
 )
 
 var leftBoxStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
@@ -24,17 +25,25 @@ type compactHistoryListItem struct {
 
 type compactedHistory map[int64]*compactHistoryListItem
 
-func createCompactHistory(historyList []*history.HistoryEvent) compactedHistory {
+func createCompactHistory(historyList []*history.HistoryEvent, pendingActivities []*workflow.PendingActivityInfo) compactedHistory {
 	compactedHistory := make(compactedHistory)
 	for _, historyEvent := range historyList {
 		switch historyEvent.GetEventType() {
 		// Activity events
 		case temporalEnums.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED:
 			eventId := historyEvent.GetEventId()
+			attributes := historyEvent.GetActivityTaskScheduledEventAttributes()
 			compactedHistory[eventId] = &compactHistoryListItem{events: make([]*history.HistoryEvent, 0)}
 			compactedHistory[eventId].actionType = "Activity"
 			compactedHistory[eventId].icon = "📅"
+
 			compactedHistory[eventId].rowContent = historyEvent.GetActivityTaskScheduledEventAttributes().GetActivityType().GetName()
+			for _, pendingActivity := range pendingActivities {
+				if pendingActivity.GetActivityId() == attributes.GetActivityId() {
+					compactedHistory[eventId].rowContent += " 🔄" + strconv.Itoa(int(pendingActivity.GetAttempt()))
+					break
+				}
+			}
 			compactedHistory[eventId].events = append(compactedHistory[eventId].events, historyEvent)
 		case temporalEnums.EVENT_TYPE_ACTIVITY_TASK_STARTED:
 			activityTaskStartedEventAttributes := historyEvent.GetActivityTaskStartedEventAttributes()
@@ -99,19 +108,18 @@ func createCompactHistory(historyList []*history.HistoryEvent) compactedHistory 
 		case temporalEnums.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_STARTED:
 			childWorkflowExecutionStartedEventAttributes := historyEvent.GetChildWorkflowExecutionStartedEventAttributes()
 			eventId := childWorkflowExecutionStartedEventAttributes.GetInitiatedEventId()
-			compactedHistory[eventId].icon = "👶🏃"
+			compactedHistory[eventId].icon = "🏃👶"
 			compactedHistory[eventId].events = append(compactedHistory[childWorkflowExecutionStartedEventAttributes.GetInitiatedEventId()].events, historyEvent)
 
 		case temporalEnums.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_COMPLETED:
 			childWorkflowExecutionCompletedEventAttributes := historyEvent.GetChildWorkflowExecutionCompletedEventAttributes()
 			eventId := childWorkflowExecutionCompletedEventAttributes.GetInitiatedEventId()
-			compactedHistory[eventId].icon = "👶✅"
+			compactedHistory[eventId].icon = "✅👶"
 			compactedHistory[eventId].events = append(compactedHistory[childWorkflowExecutionCompletedEventAttributes.GetInitiatedEventId()].events, historyEvent)
 		case temporalEnums.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_FAILED:
 			childWorkflowExecutionFailedEventAttributes := historyEvent.GetChildWorkflowExecutionFailedEventAttributes()
 			eventId := childWorkflowExecutionFailedEventAttributes.GetInitiatedEventId()
-			compactedHistory[eventId].icon = "👶❌"
-			compactedHistory[eventId].events = append(compactedHistory[childWorkflowExecutionFailedEventAttributes.GetInitiatedEventId()].events, historyEvent)
+			compactedHistory[eventId].icon = "❌👶"
 		default:
 			eventId := historyEvent.GetEventId()
 			eventType := historyEvent.GetEventType()
@@ -145,7 +153,8 @@ func (m model) focusedModeView() string {
 
 	// Bottom box
 	bottomBoxStyle := bottomBoxStyle.Width(m.viewport.Width - x).Height(m.viewport.Height - boxHeight - y*2)
-	compactHistory := createCompactHistory(selectedWorkflow.history)
+
+	compactHistory := createCompactHistory(selectedWorkflow.history, selectedWorkflow.pendingActivities)
 	historyEventTableStyle := table.New().
 		Border(lipgloss.NormalBorder())
 	// Convert compactHistory into a slice
@@ -154,6 +163,7 @@ func (m model) focusedModeView() string {
 		compactHistorySlice = append(compactHistorySlice, compactHistoryItem)
 	}
 
+	// Pending events
 	sort.Slice(compactHistorySlice, func(i, j int) bool {
 		// Sort by the first eventid
 		return compactHistorySlice[i].events[0].GetEventId() < compactHistorySlice[j].events[0].GetEventId()
