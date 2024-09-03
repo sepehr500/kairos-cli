@@ -281,7 +281,6 @@ func (m model) handleSearchUpdate(msg tea.KeyMsg) (model, tea.Cmd) {
 	if msg.String() == "esc" {
 		m.searchInput.Blur()
 		m.searchMode = ""
-		m.focusViewWorkflowId = ""
 		return m, nil
 	}
 	if msg.String() == "ctrl+c" {
@@ -386,11 +385,11 @@ func (m model) renderFooter() string {
 // Table Logic and Rendering
 // ========================================
 
-type workflowDetailsRecievedMsg struct {
+type setFocusedWorkflowMsg struct {
 	details *workflowTableListItem
 }
 
-func (m *model) getWorkflowDetailsCmd(tableItem *workflowTableListItem) tea.Cmd {
+func (m *model) setFocusedWorkflowCmd(tableItem *workflowTableListItem) tea.Cmd {
 	return func() tea.Msg {
 		temporalClient, _ := getTemporalClient()
 		executionDescription, err := temporalClient.DescribeWorkflowExecution(context.Background(), tableItem.workflow.Execution.GetWorkflowId(), tableItem.workflow.Execution.GetRunId())
@@ -412,7 +411,7 @@ func (m *model) getWorkflowDetailsCmd(tableItem *workflowTableListItem) tea.Cmd 
 		}
 		tableItem.history = history
 		tableItem.pendingActivities = pendingActivities
-		return workflowDetailsRecievedMsg{details: tableItem}
+		return setFocusedWorkflowMsg{details: tableItem}
 	}
 }
 
@@ -720,7 +719,7 @@ type workflowTableListItem struct {
 }
 
 type model struct {
-	focusViewWorkflowId        string
+	focusedWorkflowState       focusedModeState
 	parentWorkflowMode         bool
 	confirmationFlowState      confirmationFlowStateMsg
 	keys                       KeyMap
@@ -748,8 +747,12 @@ func initialModel() model {
 	activeSearchParams[WORKFLOWID] = []string{}
 	activeSearchParams[EXECUTIONSTATUS] = []string{}
 	return model{
-		focusViewWorkflowId: "",
-		parentWorkflowMode:  false,
+		focusedWorkflowState: focusedModeState{
+			workflowIdStack: []string{},
+			focusedWorkflow: nil,
+			keys:            FocusedModeKeyMap,
+		},
+		parentWorkflowMode: false,
 		confirmationFlowState: confirmationFlowStateMsg{
 			state:                         NO_FLOW_RUNNING,
 			pendingConfirmationMessage:    "",
@@ -781,7 +784,7 @@ func initialModel() model {
 }
 
 func (m model) View() string {
-	if m.focusViewWorkflowId != "" {
+	if m.focusedWorkflowState.focusedWorkflow != nil {
 		return m.focusedModeView()
 	}
 	view := m.renderHeader() + "\n" + m.renderTable(m.workflows) + "\n" + m.renderFooter()
@@ -804,9 +807,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		}
 
-	case workflowDetailsRecievedMsg:
-		// I'm not sure if this is good...but this msg just triggers rerendering
-		// since the memory is changed in the command
+	case setFocusedWorkflowMsg:
+		m.focusedWorkflowState.focusedWorkflow = msg.details
+		m.focusedWorkflowState.workflowIdStack = append(m.focusedWorkflowState.workflowIdStack, msg.details.workflow.GetExecution().WorkflowId)
 		return m, nil
 
 	case confirmationFlowStateMsg:
@@ -872,10 +875,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.handleSearchModeSelect(msg)
 
 		switch {
+		// These keys should exit the program.
+		case key.Matches(msg, m.keys.Exit):
+			return m, tea.Quit
 		case key.Matches(msg, m.keys.FocusWorkflow):
 			if m.cursor < len(m.workflows) {
-				m.focusViewWorkflowId = m.workflows[m.cursor].workflow.GetExecution().WorkflowId
-				return m, m.getWorkflowDetailsCmd(m.workflows[m.cursor])
+				return m, m.setFocusedWorkflowCmd(m.workflows[m.cursor])
 			}
 			return m, nil
 		case key.Matches(msg, m.keys.ToggleParentWorkflowMode):
@@ -908,11 +913,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.refetchWorkflowsCmd()
 		case key.Matches(msg, m.keys.RefetchWorkflows):
 			return m, m.refetchWorkflowsCmd()
-		// These keys should exit the program.
-		case key.Matches(msg, m.keys.Exit):
-			return m, tea.Quit
 			// The "enter" key and the spacebar (a literal space) toggle
 			// the selected state for the item that the cursor is pointing at.
+		case m.focusedWorkflowState.focusedWorkflow != nil:
+			return m.UpdateFocusedModeState(msg)
+
 		case key.Matches(msg, m.keys.Up):
 			if m.cursor > 0 {
 				m.cursor--
