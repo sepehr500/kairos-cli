@@ -73,9 +73,14 @@ func (m *model) UpdateFocusedModeState(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+type eventContent struct {
+	eventType string
+	eventData string
+}
+
 type compactHistoryListItem struct {
 	events        []*history.HistoryEvent
-	eventsContent []string
+	eventsContent []eventContent
 	icon          string
 	actionType    string
 	rowContent    string
@@ -112,13 +117,16 @@ func createCompactHistory(historyList []*history.HistoryEvent, pendingActivities
 			compactedHistory[eventId].rowContent = historyEvent.GetActivityTaskScheduledEventAttributes().GetActivityType().GetName()
 			for _, pendingActivity := range pendingActivities {
 				if pendingActivity.GetActivityId() == attributes.GetActivityId() {
+					errorCause := pendingActivity.GetLastFailure().GetCause().GetMessage()
+					compactedHistory[eventId].eventsContent = append(compactedHistory[eventId].eventsContent, eventContent{eventType: "Last Error", eventData: errorCause})
 					compactedHistory[eventId].rowContent += " 🔄" + strconv.Itoa(int(pendingActivity.GetAttempt()))
 					break
 				}
+
 			}
 			if attributes.GetInput().GetPayloads() != nil {
 				prettyJSONString := convertDataToPrettyJSON(attributes.GetInput().GetPayloads()[0].GetData())
-				compactedHistory[eventId].eventsContent = append(compactedHistory[eventId].eventsContent, prettyJSONString)
+				compactedHistory[eventId].eventsContent = append(compactedHistory[eventId].eventsContent, eventContent{eventType: "Input", eventData: prettyJSONString})
 			}
 			compactedHistory[eventId].events = append(compactedHistory[eventId].events, historyEvent)
 		case temporalEnums.EVENT_TYPE_ACTIVITY_TASK_STARTED:
@@ -133,7 +141,7 @@ func createCompactHistory(historyList []*history.HistoryEvent, pendingActivities
 			prettyJsonString := convertDataToPrettyJSON(activityTaskCompletedEventAttributes.GetResult().GetPayloads()[0].GetData())
 			event.icon = "✅"
 			event.events = append(event.events, historyEvent)
-			compactedHistory[eventId].eventsContent = append(compactedHistory[eventId].eventsContent, prettyJsonString)
+			compactedHistory[eventId].eventsContent = append(compactedHistory[eventId].eventsContent, eventContent{eventType: "Output", eventData: prettyJsonString})
 		case temporalEnums.EVENT_TYPE_ACTIVITY_TASK_FAILED:
 			activityTaskFailedEventAttributes := historyEvent.GetActivityTaskFailedEventAttributes()
 			eventId := activityTaskFailedEventAttributes.GetScheduledEventId()
@@ -179,6 +187,11 @@ func createCompactHistory(historyList []*history.HistoryEvent, pendingActivities
 			eventId := historyEvent.GetEventId()
 			// initialize the compacted history list
 			compactedHistory[eventId] = &compactHistoryListItem{events: make([]*history.HistoryEvent, 0)}
+			inputPayloads := historyEvent.GetStartChildWorkflowExecutionInitiatedEventAttributes().GetInput().GetPayloads()
+			if inputPayloads != nil {
+				prettyJsonString := convertDataToPrettyJSON(historyEvent.GetStartChildWorkflowExecutionInitiatedEventAttributes().GetInput().GetPayloads()[0].GetData())
+				compactedHistory[eventId].eventsContent = append(compactedHistory[eventId].eventsContent, eventContent{eventType: "Input", eventData: prettyJsonString})
+			}
 			compactedHistory[eventId].actionType = "Child Workflow"
 			compactedHistory[eventId].icon = "👶🏃"
 			compactedHistory[eventId].rowContent = historyEvent.GetStartChildWorkflowExecutionInitiatedEventAttributes().GetWorkflowType().GetName()
@@ -192,6 +205,11 @@ func createCompactHistory(historyList []*history.HistoryEvent, pendingActivities
 		case temporalEnums.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_COMPLETED:
 			childWorkflowExecutionCompletedEventAttributes := historyEvent.GetChildWorkflowExecutionCompletedEventAttributes()
 			eventId := childWorkflowExecutionCompletedEventAttributes.GetInitiatedEventId()
+			inputPayloads := childWorkflowExecutionCompletedEventAttributes.GetResult().GetPayloads()
+			if inputPayloads != nil {
+				prettyJsonString := convertDataToPrettyJSON(childWorkflowExecutionCompletedEventAttributes.GetResult().GetPayloads()[0].GetData())
+				compactedHistory[eventId].eventsContent = append(compactedHistory[eventId].eventsContent, eventContent{eventType: "Output", eventData: prettyJsonString})
+			}
 			compactedHistory[eventId].icon = "✅👶"
 			compactedHistory[eventId].events = append(compactedHistory[childWorkflowExecutionCompletedEventAttributes.GetInitiatedEventId()].events, historyEvent)
 		case temporalEnums.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_FAILED:
@@ -209,7 +227,7 @@ func createCompactHistory(historyList []*history.HistoryEvent, pendingActivities
 
 			if inputPayloads != nil {
 				prettyJsonString := convertDataToPrettyJSON(executionStartedEventAttributes.GetInput().GetPayloads()[0].GetData())
-				compactedHistory[eventId].eventsContent = append(compactedHistory[eventId].eventsContent, prettyJsonString)
+				compactedHistory[eventId].eventsContent = append(compactedHistory[eventId].eventsContent, eventContent{eventType: "Input", eventData: prettyJsonString})
 			}
 			compactedHistory[eventId].actionType = eventType.String()
 			compactedHistory[eventId].icon = "🚀"
@@ -222,10 +240,18 @@ func createCompactHistory(historyList []*history.HistoryEvent, pendingActivities
 			outputPayloads := executionCompletedEventAttributes.GetResult().GetPayloads()
 			if outputPayloads != nil {
 				prettyJsonString := convertDataToPrettyJSON(executionCompletedEventAttributes.GetResult().GetPayloads()[0].GetData())
-				compactedHistory[eventId].eventsContent = append(compactedHistory[eventId].eventsContent, prettyJsonString)
+				compactedHistory[eventId].eventsContent = append(compactedHistory[eventId].eventsContent, eventContent{eventType: "Output", eventData: prettyJsonString})
 			}
 			compactedHistory[eventId].actionType = eventType.String()
 			compactedHistory[eventId].icon = "✅"
+			compactedHistory[eventId].events = append(compactedHistory[eventId].events, historyEvent)
+		case temporalEnums.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED:
+			eventId := historyEvent.GetEventId()
+			compactedHistory[eventId] = &compactHistoryListItem{events: make([]*history.HistoryEvent, 0)}
+			signalName := historyEvent.GetWorkflowExecutionSignaledEventAttributes().GetSignalName()
+			compactedHistory[eventId].actionType = eventType.String()
+			compactedHistory[eventId].icon = "🛜"
+			compactedHistory[eventId].rowContent = signalName
 			compactedHistory[eventId].events = append(compactedHistory[eventId].events, historyEvent)
 
 		default:
@@ -280,7 +306,6 @@ func truncateTextBlock(text string, maxHeight int, maxWidth int) string {
 	if totalNewLines < maxHeight {
 		return text
 	}
-	// Change linesliens to H char
 	tmpStyle := lipgloss.NewStyle().Width(maxWidth).Render(text)
 	newLineIndex := 0
 	newLineCount := 0
@@ -309,9 +334,13 @@ func truncateTextBlock(text string, maxHeight int, maxWidth int) string {
 func (m *model) createEventDetailsRows(compactHistoryListItem compactHistoryListItem, width int, height int) string {
 	focusedHistoryEvents := compactHistoryListItem.eventsContent
 	focusedHistoryEventContent := ""
+	eventBlockHeight := 0
+	if len(focusedHistoryEvents) != 0 {
+		eventBlockHeight = height / len(focusedHistoryEvents)
+	}
 	for _, historyEvent := range focusedHistoryEvents {
-		truncatedHistoryEvent := truncateTextBlock(historyEvent, 10, width)
-		focusedHistoryEventContent += getModuleBorderStyle(width-2, "Event Details").Render(truncatedHistoryEvent) + "\n"
+		truncatedHistoryEvent := truncateTextBlock(historyEvent.eventData, eventBlockHeight, width)
+		focusedHistoryEventContent += getModuleBorderStyle(width-2, historyEvent.eventType).Render(truncatedHistoryEvent) + "\n"
 	}
 	return lipgloss.NewStyle().Width(width).Height(height).Render(focusedHistoryEventContent)
 }
