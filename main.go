@@ -386,15 +386,14 @@ func (m model) renderFooter() string {
 // ========================================
 
 type setFocusedWorkflowMsg struct {
-	details          *workflowTableListItem
-	compactedHistory compactedHistory
+	compactedHistoryStackItem compactHistoryStackItem
 }
 
-func (m *model) setFocusedWorkflowCmd(tableItem *workflowTableListItem) tea.Cmd {
+func (m *model) setFocusedWorkflowCmd(workflowId string, runId string) tea.Cmd {
 	return func() tea.Msg {
 		temporalClient, _ := getTemporalClient()
-		executionDescription, err := temporalClient.DescribeWorkflowExecution(context.Background(), tableItem.workflow.Execution.GetWorkflowId(), tableItem.workflow.Execution.GetRunId())
-		historyIterator := temporalClient.GetWorkflowHistory(context.Background(), tableItem.workflow.Execution.GetWorkflowId(), tableItem.workflow.Execution.GetRunId(), false, 0)
+		executionDescription, err := temporalClient.DescribeWorkflowExecution(context.Background(), workflowId, runId)
+		historyIterator := temporalClient.GetWorkflowHistory(context.Background(), workflowId, runId, false, 0)
 
 		pendingActivities := executionDescription.GetPendingActivities()
 		// Nested loop. We break out of the loop if we find an activity with an attempt > 0
@@ -410,10 +409,14 @@ func (m *model) setFocusedWorkflowCmd(tableItem *workflowTableListItem) tea.Cmd 
 			}
 			history = append(history, historyEvent)
 		}
-		tableItem.history = history
-		tableItem.pendingActivities = pendingActivities
 		compactedHistory := createCompactHistory(history, pendingActivities)
-		return setFocusedWorkflowMsg{details: tableItem, compactedHistory: compactedHistory}
+		newCompactedHistoryStackItem := compactHistoryStackItem{
+			workflowId:          workflowId,
+			runId:               runId,
+			compactHistory:      compactedHistory,
+			workflowDescription: executionDescription,
+		}
+		return setFocusedWorkflowMsg{compactedHistoryStackItem: newCompactedHistoryStackItem}
 	}
 }
 
@@ -754,10 +757,8 @@ func initialModel() model {
 	activeSearchParams[EXECUTIONSTATUS] = []string{}
 	return model{
 		focusedWorkflowState: focusedModeState{
-			workflowIdStack:  []string{},
-			focusedWorkflow:  nil,
-			keys:             FocusedModeKeyMap,
-			compactedHistory: make(compactedHistory),
+			keys:                  FocusedModeKeyMap,
+			compactedHistoryStack: make([]compactHistoryStackItem, 0),
 		},
 		parentWorkflowMode: false,
 		confirmationFlowState: confirmationFlowStateMsg{
@@ -791,7 +792,7 @@ func initialModel() model {
 }
 
 func (m model) View() string {
-	if m.focusedWorkflowState.focusedWorkflow != nil {
+	if len(m.focusedWorkflowState.compactedHistoryStack) > 0 {
 		return m.focusedModeView()
 	}
 	view := m.renderHeader() + "\n" + m.renderTable(m.workflows) + "\n" + m.renderFooter()
@@ -815,9 +816,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case setFocusedWorkflowMsg:
-		m.focusedWorkflowState.focusedWorkflow = msg.details
-		m.focusedWorkflowState.workflowIdStack = append(m.focusedWorkflowState.workflowIdStack, msg.details.workflow.GetExecution().WorkflowId)
-		m.focusedWorkflowState.compactedHistory = msg.compactedHistory
+		m.focusedWorkflowState.cursor = 0
+		m.focusedWorkflowState.compactedHistoryStack = append(m.focusedWorkflowState.compactedHistoryStack, msg.compactedHistoryStackItem)
 		return m, nil
 
 	case confirmationFlowStateMsg:
@@ -886,11 +886,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// These keys should exit the program.
 		case key.Matches(msg, m.keys.Exit):
 			return m, tea.Quit
-		case key.Matches(msg, m.keys.FocusWorkflow):
-			if m.cursor < len(m.workflows) {
-				return m, m.setFocusedWorkflowCmd(m.workflows[m.cursor])
-			}
-			return m, nil
 		case key.Matches(msg, m.keys.ToggleParentWorkflowMode):
 			m.parentWorkflowMode = !m.parentWorkflowMode
 			return m, m.refetchWorkflowsCmd()
@@ -923,8 +918,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.refetchWorkflowsCmd()
 			// The "enter" key and the spacebar (a literal space) toggle
 			// the selected state for the item that the cursor is pointing at.
-		case m.focusedWorkflowState.focusedWorkflow != nil:
+		case len(m.focusedWorkflowState.compactedHistoryStack) > 0:
 			return m.UpdateFocusedModeState(msg)
+
+		case key.Matches(msg, m.keys.FocusWorkflow):
+			if m.cursor < len(m.workflows) {
+				currentWorkflow := m.workflows[m.cursor]
+				return m, m.setFocusedWorkflowCmd(currentWorkflow.workflow.Execution.WorkflowId, currentWorkflow.workflow.Execution.RunId)
+			}
+			return m, nil
 
 		case key.Matches(msg, m.keys.Up):
 			if m.cursor > 0 {
