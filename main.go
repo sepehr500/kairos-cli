@@ -386,7 +386,8 @@ func (m model) renderFooter() string {
 // ========================================
 
 type setFocusedWorkflowMsg struct {
-	details *workflowTableListItem
+	details          *workflowTableListItem
+	compactedHistory compactedHistory
 }
 
 func (m *model) setFocusedWorkflowCmd(tableItem *workflowTableListItem) tea.Cmd {
@@ -411,7 +412,8 @@ func (m *model) setFocusedWorkflowCmd(tableItem *workflowTableListItem) tea.Cmd 
 		}
 		tableItem.history = history
 		tableItem.pendingActivities = pendingActivities
-		return setFocusedWorkflowMsg{details: tableItem}
+		compactedHistory := createCompactHistory(history, pendingActivities)
+		return setFocusedWorkflowMsg{details: tableItem, compactedHistory: compactedHistory}
 	}
 }
 
@@ -565,10 +567,14 @@ func (m model) renderTable(workflows []*workflowTableListItem) string {
 		if w.attempts == 0 {
 			attempts = "--"
 		}
+		childIcon := ""
+		if w.workflow.GetParentExecution().GetWorkflowId() != "" {
+			childIcon = "👶"
+		}
 		statusIcon := statusToStyleMap[w.workflow.GetStatus().String()].icon
 		startTimeDiff := getRelativeTimeDiff(time.Now(), w.workflow.GetStartTime().AsTime())
 
-		t.Row(statusIcon, w.workflow.GetType().Name, workflowId, startTimeDiff, closeTime, attempts)
+		t.Row(statusIcon+childIcon, w.workflow.GetType().Name, workflowId, startTimeDiff, closeTime, attempts)
 	}
 	return tableSurroundStyle.Render(t.Render())
 }
@@ -748,9 +754,10 @@ func initialModel() model {
 	activeSearchParams[EXECUTIONSTATUS] = []string{}
 	return model{
 		focusedWorkflowState: focusedModeState{
-			workflowIdStack: []string{},
-			focusedWorkflow: nil,
-			keys:            FocusedModeKeyMap,
+			workflowIdStack:  []string{},
+			focusedWorkflow:  nil,
+			keys:             FocusedModeKeyMap,
+			compactedHistory: make(compactedHistory),
 		},
 		parentWorkflowMode: false,
 		confirmationFlowState: confirmationFlowStateMsg{
@@ -810,6 +817,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case setFocusedWorkflowMsg:
 		m.focusedWorkflowState.focusedWorkflow = msg.details
 		m.focusedWorkflowState.workflowIdStack = append(m.focusedWorkflowState.workflowIdStack, msg.details.workflow.GetExecution().WorkflowId)
+		m.focusedWorkflowState.compactedHistory = msg.compactedHistory
 		return m, nil
 
 	case confirmationFlowStateMsg:

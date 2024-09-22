@@ -42,10 +42,11 @@ var FocusedModeKeyMap = FocusedKeyMap{
 }
 
 type focusedModeState struct {
-	workflowIdStack []string
-	focusedWorkflow *workflowTableListItem
-	cursor          int
-	keys            FocusedKeyMap
+	workflowIdStack  []string
+	focusedWorkflow  *workflowTableListItem
+	cursor           int
+	keys             FocusedKeyMap
+	compactedHistory compactedHistory
 }
 
 func (m *model) UpdateFocusedModeState(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -53,9 +54,13 @@ func (m *model) UpdateFocusedModeState(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, m.focusedWorkflowState.keys.Up):
-			m.focusedWorkflowState.cursor--
+			if m.focusedWorkflowState.cursor > 0 {
+				m.focusedWorkflowState.cursor--
+			}
 		case key.Matches(msg, m.focusedWorkflowState.keys.Down):
-			m.focusedWorkflowState.cursor++
+			if m.focusedWorkflowState.cursor < len(m.focusedWorkflowState.compactedHistory)-1 {
+				m.focusedWorkflowState.cursor++
+			}
 		case key.Matches(msg, m.focusedWorkflowState.keys.Back):
 			m.focusedWorkflowState.focusedWorkflow = nil
 			m.focusedWorkflowState.cursor = 0
@@ -111,9 +116,11 @@ func createCompactHistory(historyList []*history.HistoryEvent, pendingActivities
 					break
 				}
 			}
-			prettyJSONString := convertDataToPrettyJSON(attributes.GetInput().GetPayloads()[0].GetData())
+			if attributes.GetInput().GetPayloads() != nil {
+				prettyJSONString := convertDataToPrettyJSON(attributes.GetInput().GetPayloads()[0].GetData())
+				compactedHistory[eventId].eventsContent = append(compactedHistory[eventId].eventsContent, prettyJSONString)
+			}
 			compactedHistory[eventId].events = append(compactedHistory[eventId].events, historyEvent)
-			compactedHistory[eventId].eventsContent = append(compactedHistory[eventId].eventsContent, prettyJSONString)
 		case temporalEnums.EVENT_TYPE_ACTIVITY_TASK_STARTED:
 			activityTaskStartedEventAttributes := historyEvent.GetActivityTaskStartedEventAttributes()
 			eventId := activityTaskStartedEventAttributes.GetScheduledEventId()
@@ -241,21 +248,85 @@ var rightBoxStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
 var bottomBoxStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
 var historyListBoxStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
 var historyDetailBoxStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
+var topBarStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
+
+var (
+	topBarHeight = 3
+)
+
+func getModuleBorderStyle(width int, title string) lipgloss.Style {
+	border := lipgloss.Border{
+		Top:         "─",
+		Bottom:      "─",
+		Left:        "│",
+		Right:       "│",
+		TopLeft:     "┌",
+		TopRight:    "┐",
+		BottomLeft:  "└",
+		BottomRight: "┘",
+	}
+	firstPartOfBorder := "--|" + title + "|"
+	border.Top = "--|" + title + "|" + strings.Repeat("-", width-len(firstPartOfBorder)-1)
+
+	return lipgloss.NewStyle().
+		Border(border).
+		Width(width).
+		MaxWidth(width + 10)
+
+}
+
+func truncateTextBlock(text string, maxHeight int, maxWidth int) string {
+	totalNewLines := strings.Count(text, "\n")
+	if totalNewLines < maxHeight {
+		return text
+	}
+	// Change linesliens to H char
+	tmpStyle := lipgloss.NewStyle().Width(maxWidth).Render(text)
+	newLineIndex := 0
+	newLineCount := 0
+	for true {
+		// Index of the next newline
+		tmpNewLineIndex := strings.Index(tmpStyle[newLineIndex:], "\n")
+		newLineIndex += tmpNewLineIndex
+		if tmpNewLineIndex == -1 {
+			break
+		}
+		if newLineCount == maxHeight {
+			break
+		}
+		newLineCount++
+		// Add 1 to the newline index to skip the newline character
+		newLineIndex++
+
+	}
+	if newLineIndex-3 < 0 {
+		return tmpStyle
+	}
+	return tmpStyle[:newLineIndex-3] + "..."
+
+}
+
+func (m *model) createEventDetailsRows(compactHistoryListItem compactHistoryListItem, width int, height int) string {
+	focusedHistoryEvents := compactHistoryListItem.eventsContent
+	focusedHistoryEventContent := ""
+	for _, historyEvent := range focusedHistoryEvents {
+		truncatedHistoryEvent := truncateTextBlock(historyEvent, 10, width)
+		focusedHistoryEventContent += getModuleBorderStyle(width-2, "Event Details").Render(truncatedHistoryEvent) + "\n"
+	}
+	return lipgloss.NewStyle().Width(width).Height(height).Render(focusedHistoryEventContent)
+}
 
 // Each border is .5 characters wide, so we subtract 2 from the width and height
 func (m model) focusedModeView() string {
-	selectedWorkflow := m.focusedWorkflowState.focusedWorkflow
 
 	boxWidth := m.viewport.Width / 2
-	// boxHeight := m.viewport.Height * 2 / 3
-	// leftBoxStyle := leftBoxStyle.Width(boxWidth).Height(boxHeight).Padding(0, 0).Margin(0, 0)
-	// rightBoxStyle := rightBoxStyle.Width(boxWidth-x*2).Height(boxHeight).Padding(0, 0).Margin(0, 0)
-	historyListBoxStyleWithDem := historyListBoxStyle.Height(m.viewport.Height - 2).Width(boxWidth - 2)
-	historyDetailBoxStyleWithDem := historyDetailBoxStyle.Height(m.viewport.Height - 2).Width(boxWidth - 2)
+	bottomAreaHeight := m.viewport.Height - topBarHeight - 5
+	historyListBoxStyleWithDem := historyListBoxStyle.Height(bottomAreaHeight).Width(boxWidth - 2)
+	// historyDetailBoxStyleWithDem := getModuleBorderStyle(boxWidth-2, "Details").MaxHeight(m.viewport.Height - 2 - topBarHeight)
 
 	// Bottom box
 
-	compactHistory := createCompactHistory(selectedWorkflow.history, selectedWorkflow.pendingActivities)
+	compactHistory := m.focusedWorkflowState.compactedHistory
 
 	historyEventTableStyle := table.New().
 		Width(historyListBoxStyleWithDem.GetWidth()).
@@ -290,15 +361,15 @@ func (m model) focusedModeView() string {
 		historyEventTableStyle.Row(compactHistoryItem.icon, strconv.FormatInt(firstEvent.GetEventId(), 10), compactHistoryItem.actionType, compactHistoryItem.rowContent)
 	}
 
-	focusedHistoryEvents := compactHistorySlice[m.focusedWorkflowState.cursor].eventsContent
-	focusedHistoryEventContent := ""
-	for _, historyEvent := range focusedHistoryEvents {
-		if len(historyEvent) > 1000 {
-			historyEvent = historyEvent[:100] + "..."
-		}
-		focusedHistoryEventContent += historyEvent + "\n\n"
+	focusedHistoryEvents := compactHistorySlice[m.focusedWorkflowState.cursor]
+	focusedHistoryEventContent := m.createEventDetailsRows(*focusedHistoryEvents, boxWidth-2, bottomAreaHeight)
+	statusIcon := statusToStyleMap[m.focusedWorkflowState.focusedWorkflow.workflow.GetStatus().String()].icon
+	childIcon := ""
+	if m.focusedWorkflowState.focusedWorkflow.workflow.GetParentExecution() != nil {
+		childIcon = "👶"
 	}
+	topBarContent := topBarStyle.Height(topBarHeight - 2).Width(m.viewport.Width - 3).Render(childIcon + " " + statusIcon + " Workflow ID: " + m.focusedWorkflowState.focusedWorkflow.workflow.Execution.GetWorkflowId())
 
-	return lipgloss.JoinHorizontal(lipgloss.Center, historyDetailBoxStyleWithDem.Render(focusedHistoryEventContent), historyListBoxStyleWithDem.Render(historyEventTableStyle.Render()))
+	return lipgloss.JoinVertical(lipgloss.Top, topBarContent, lipgloss.JoinHorizontal(lipgloss.Top, focusedHistoryEventContent, historyListBoxStyleWithDem.Render(historyEventTableStyle.Render())))
 
 }
