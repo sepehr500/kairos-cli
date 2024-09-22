@@ -13,16 +13,22 @@ import (
 	temporalEnums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/history/v1"
 	"go.temporal.io/api/workflow/v1"
+	"go.temporal.io/api/workflowservice/v1"
 )
 
 type FocusedKeyMap struct {
-	Up   key.Binding
-	Down key.Binding
-	Exit key.Binding
-	Back key.Binding
+	Up                 key.Binding
+	Down               key.Binding
+	Exit               key.Binding
+	Back               key.Binding
+	FocusChildWorkflow key.Binding
 }
 
 var FocusedModeKeyMap = FocusedKeyMap{
+	FocusChildWorkflow: key.NewBinding(
+		key.WithKeys("f"),
+		key.WithHelp("f", "focus on child workflow"),
+	),
 	Up: key.NewBinding(
 		key.WithKeys("k", "up"),        // actual keybindings
 		key.WithHelp("↑/k", "move up"), // corresponding help text
@@ -41,30 +47,51 @@ var FocusedModeKeyMap = FocusedKeyMap{
 	),
 }
 
+type compactHistoryStackItem struct {
+	workflowId          string
+	runId               string
+	compactHistory      compactedHistory
+	workflowDescription *workflowservice.DescribeWorkflowExecutionResponse
+}
+
 type focusedModeState struct {
-	workflowIdStack  []string
-	focusedWorkflow  *workflowTableListItem
-	cursor           int
-	keys             FocusedKeyMap
-	compactedHistory compactedHistory
+	cursor                int
+	keys                  FocusedKeyMap
+	compactedHistoryStack []compactHistoryStackItem
+}
+
+func (m *focusedModeState) getCurrentHistoryStackItem() compactHistoryStackItem {
+	return m.compactedHistoryStack[len(m.compactedHistoryStack)-1]
 }
 
 func (m *model) UpdateFocusedModeState(msg tea.Msg) (tea.Model, tea.Cmd) {
+	compactedHistory := m.focusedWorkflowState.getCurrentHistoryStackItem().compactHistory
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch {
+		case key.Matches(msg, m.focusedWorkflowState.keys.FocusChildWorkflow):
+			currentHistorySlice := m.focusedWorkflowState.getCurrentCompactHistorySlice()
+			if len(currentHistorySlice) < 2 {
+				return m, nil
+			}
+			currentHistoryItem := currentHistorySlice[m.focusedWorkflowState.cursor]
+			// The second event in the compacted history is the child workflow started event (it always comes after the initiated event)
+			secondHistoryEvent := currentHistoryItem.events[1]
+			if secondHistoryEvent.EventType == temporalEnums.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_STARTED {
+				executionAttributes := secondHistoryEvent.GetChildWorkflowExecutionStartedEventAttributes()
+				return m, m.setFocusedWorkflowCmd(executionAttributes.WorkflowExecution.GetWorkflowId(), executionAttributes.WorkflowExecution.GetRunId())
+			}
 		case key.Matches(msg, m.focusedWorkflowState.keys.Up):
 			if m.focusedWorkflowState.cursor > 0 {
 				m.focusedWorkflowState.cursor--
 			}
 		case key.Matches(msg, m.focusedWorkflowState.keys.Down):
-			if m.focusedWorkflowState.cursor < len(m.focusedWorkflowState.compactedHistory)-1 {
+			if m.focusedWorkflowState.cursor < len(compactedHistory)-1 {
 				m.focusedWorkflowState.cursor++
 			}
 		case key.Matches(msg, m.focusedWorkflowState.keys.Back):
-			m.focusedWorkflowState.focusedWorkflow = nil
+			m.focusedWorkflowState.compactedHistoryStack = m.focusedWorkflowState.compactedHistoryStack[:len(m.focusedWorkflowState.compactedHistoryStack)-1]
 			m.focusedWorkflowState.cursor = 0
-			m.focusedWorkflowState.workflowIdStack = []string{}
 		case key.Matches(msg, m.focusedWorkflowState.keys.Exit):
 			return m, tea.Quit
 		}
@@ -195,6 +222,7 @@ func createCompactHistory(historyList []*history.HistoryEvent, pendingActivities
 			compactedHistory[eventId].actionType = "Child Workflow"
 			compactedHistory[eventId].icon = "👶🏃"
 			compactedHistory[eventId].rowContent = historyEvent.GetStartChildWorkflowExecutionInitiatedEventAttributes().GetWorkflowType().GetName()
+			compactedHistory[eventId].events = append(compactedHistory[eventId].events, historyEvent)
 
 		case temporalEnums.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_STARTED:
 			childWorkflowExecutionStartedEventAttributes := historyEvent.GetChildWorkflowExecutionStartedEventAttributes()
@@ -345,17 +373,30 @@ func (m *model) createEventDetailsRows(compactHistoryListItem compactHistoryList
 	return lipgloss.NewStyle().Width(width).Height(height).Render(focusedHistoryEventContent)
 }
 
+func (m *focusedModeState) getCurrentCompactHistorySlice() []*compactHistoryListItem {
+	// Convert compactHistory into a slice
+	compactHistorySlice := make([]*compactHistoryListItem, 0)
+
+	for _, compactHistoryItem := range m.getCurrentHistoryStackItem().compactHistory {
+		compactHistorySlice = append(compactHistorySlice, compactHistoryItem)
+	}
+
+	// Pending events
+	sort.Slice(compactHistorySlice, func(i, j int) bool {
+		// Sort by the first eventid
+		return compactHistorySlice[i].events[0].GetEventId() > compactHistorySlice[j].events[0].GetEventId()
+	})
+	return compactHistorySlice
+}
+
 // Each border is .5 characters wide, so we subtract 2 from the width and height
 func (m model) focusedModeView() string {
 
 	boxWidth := m.viewport.Width / 2
 	bottomAreaHeight := m.viewport.Height - topBarHeight - 5
 	historyListBoxStyleWithDem := historyListBoxStyle.Height(bottomAreaHeight).Width(boxWidth - 2)
-	// historyDetailBoxStyleWithDem := getModuleBorderStyle(boxWidth-2, "Details").MaxHeight(m.viewport.Height - 2 - topBarHeight)
 
-	// Bottom box
-
-	compactHistory := m.focusedWorkflowState.compactedHistory
+	currentHistoryStackItem := m.focusedWorkflowState.getCurrentHistoryStackItem()
 
 	historyEventTableStyle := table.New().
 		Width(historyListBoxStyleWithDem.GetWidth()).
@@ -374,17 +415,7 @@ func (m model) focusedModeView() string {
 		})
 
 	// Convert compactHistory into a slice
-	compactHistorySlice := make([]*compactHistoryListItem, 0)
-
-	for _, compactHistoryItem := range compactHistory {
-		compactHistorySlice = append(compactHistorySlice, compactHistoryItem)
-	}
-
-	// Pending events
-	sort.Slice(compactHistorySlice, func(i, j int) bool {
-		// Sort by the first eventid
-		return compactHistorySlice[i].events[0].GetEventId() > compactHistorySlice[j].events[0].GetEventId()
-	})
+	compactHistorySlice := m.focusedWorkflowState.getCurrentCompactHistorySlice()
 	for _, compactHistoryItem := range compactHistorySlice {
 		firstEvent := compactHistoryItem.events[0]
 		historyEventTableStyle.Row(compactHistoryItem.icon, strconv.FormatInt(firstEvent.GetEventId(), 10), compactHistoryItem.actionType, compactHistoryItem.rowContent)
@@ -392,12 +423,12 @@ func (m model) focusedModeView() string {
 
 	focusedHistoryEvents := compactHistorySlice[m.focusedWorkflowState.cursor]
 	focusedHistoryEventContent := m.createEventDetailsRows(*focusedHistoryEvents, boxWidth-2, bottomAreaHeight)
-	statusIcon := statusToStyleMap[m.focusedWorkflowState.focusedWorkflow.workflow.GetStatus().String()].icon
+	statusIcon := statusToStyleMap[currentHistoryStackItem.workflowDescription.GetWorkflowExecutionInfo().GetStatus().String()].icon
 	childIcon := ""
-	if m.focusedWorkflowState.focusedWorkflow.workflow.GetParentExecution() != nil {
+	if currentHistoryStackItem.workflowDescription.GetWorkflowExecutionInfo().GetParentExecution() != nil {
 		childIcon = "👶"
 	}
-	topBarContent := topBarStyle.Height(topBarHeight - 2).Width(m.viewport.Width - 3).Render(childIcon + " " + statusIcon + " Workflow ID: " + m.focusedWorkflowState.focusedWorkflow.workflow.Execution.GetWorkflowId())
+	topBarContent := topBarStyle.Height(topBarHeight - 2).Width(m.viewport.Width - 3).Render(childIcon + " " + statusIcon + " Workflow ID: " + currentHistoryStackItem.workflowId)
 
 	return lipgloss.JoinVertical(lipgloss.Top, topBarContent, lipgloss.JoinHorizontal(lipgloss.Top, focusedHistoryEventContent, historyListBoxStyleWithDem.Render(historyEventTableStyle.Render())))
 
