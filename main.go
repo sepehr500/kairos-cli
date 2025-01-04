@@ -545,10 +545,8 @@ func (m model) renderTable(workflows []*workflowTableListItem) string {
 		Width(m.viewport.Width).
 		StyleFunc(func(row, col int) lipgloss.Style {
 			switch {
-			case row == m.cursor+1:
+			case row == m.cursor:
 				return SelectedRowStyle
-			case row == 0:
-				return HeaderStyle
 			case row%2 == 0:
 				return EvenRowStyle
 			default:
@@ -623,6 +621,7 @@ func (m model) refetchWorkflowsCmd() tea.Cmd {
 				returnObj = append(returnObj, listItem)
 				continue
 			}
+			// TODO: Run this code in the background so it does not block the first render
 			if workflow.GetStatus() == temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING {
 
 				execution, err := temporalClient.DescribeWorkflowExecution(

@@ -49,11 +49,12 @@ func getTemporalConfig() TomlConfig {
 		log.Fatal("Error fetching home directory:", err)
 	}
 	var config TomlConfig
-	f := filepath.Join(homeDir, ".kairos", "credentials")
+	f := filepath.Join(homeDir, ".config", "kairos", "credentials")
 	if _, err := os.Stat(f); err != nil {
 	}
 	if _, err := toml.DecodeFile(f, &config); err != nil {
-		log.Fatal(err)
+		log.Fatal("Temporal credentials are missing. Please add credentials to .config/kairos/credentials")
+		os.Exit(0)
 	}
 	return config
 
