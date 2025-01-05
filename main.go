@@ -286,8 +286,8 @@ func (m model) handleSearchUpdate(msg tea.KeyMsg) (model, tea.Cmd) {
 		m.activeSearchParams[m.searchMode] = append(m.activeSearchParams[m.searchMode], m.searchInput.Value())
 		m.searchInput.Blur()
 		m.searchInput.SetValue("")
-		// Clear searchMode
 		m.searchMode = ""
+		m.clearListState()
 		return m, m.refetchWorkflowsCmd()
 	}
 	if msg.String() == "esc" {
@@ -399,6 +399,14 @@ func (m model) renderFooter() string {
 
 type setFocusedWorkflowMsg struct {
 	compactedHistoryStackItem compactHistoryStackItem
+}
+
+func (m *model) clearListState() {
+	m.page = 0
+	m.cursor = 0
+	nextPageTokenCache := make(map[int][]byte)
+	nextPageTokenCache[0] = []byte{}
+	m.nextPageTokenCache = nextPageTokenCache
 }
 
 func (m *model) setFocusedWorkflowCmd(workflowId string, runId string) tea.Cmd {
@@ -893,6 +901,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case ACTION_COMPLETED:
 			m.confirmationFlowState = msg
+			m.clearListState()
 			return m, m.clearCompletionCmd()
 		}
 		return m, nil
@@ -940,6 +949,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				wrappedFunc := func() tea.Msg {
 					m.confirmationFlowState.commandThatRunsOnConfirmation()
 					m.confirmationFlowState.state = ACTION_COMPLETED
+					m.clearListState()
 					return m.confirmationFlowState
 				}
 				return m, wrappedFunc
@@ -994,6 +1004,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Reset the search params if c is pressed
 		case key.Matches(msg, m.keys.ClearSearch):
 			m.activeSearchParams = make(map[searchMode][]string)
+			m.cursor = 0
+			m.page = 0
 			return m, m.refetchWorkflowsCmd()
 		case key.Matches(msg, m.keys.RefetchWorkflows):
 			return m, m.refetchWorkflowsCmd()
