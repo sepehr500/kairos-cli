@@ -56,6 +56,8 @@ type KeyMap struct {
 	RestartWorkflow          key.Binding
 	ToggleParentWorkflowMode key.Binding
 	FocusWorkflow            key.Binding
+	NextPage                 key.Binding
+	PrevPage                 key.Binding
 }
 
 var DefaultKeyMap = KeyMap{
@@ -118,6 +120,14 @@ var DefaultKeyMap = KeyMap{
 	FocusWorkflow: key.NewBinding(
 		key.WithKeys("f"),
 		key.WithHelp("f", "focus workflow"),
+	),
+	NextPage: key.NewBinding(
+		key.WithKeys("]"),
+		key.WithHelp("]", "Go to next page"),
+	),
+	PrevPage: key.NewBinding(
+		key.WithKeys("["),
+		key.WithHelp("[", "Go to previous page"),
 	),
 }
 
@@ -598,16 +608,23 @@ func (m model) backgroundUpdateWorkflowCountCmd(exeuctionStatus temporalEnums.Wo
 }
 
 type updateWorkflowsMsg struct {
-	workflows []*workflowTableListItem
+	workflows     []*workflowTableListItem
+	nextPageToken []byte
+}
+
+type refetchWorkflowCmdOptions struct {
+	nextPageToken []byte
 }
 
 func (m model) refetchWorkflowsCmd() tea.Cmd {
 	return func() tea.Msg {
 		temporalClient, _ := getTemporalClient()
 		query := m.constructQueryString()
+		nextPageToken := m.nextPageTokenCache[m.page]
 		queryResult, err := temporalClient.ListWorkflow(context.Background(), &workflowservice.ListWorkflowExecutionsRequest{
-			Query:    query,
-			PageSize: 40,
+			Query:         query,
+			PageSize:      40,
+			NextPageToken: nextPageToken,
 		})
 		if err != nil {
 			log.Fatalf("Failed to list workflows: %v", err)
@@ -623,7 +640,6 @@ func (m model) refetchWorkflowsCmd() tea.Cmd {
 			}
 			// TODO: Run this code in the background so it does not block the first render
 			if workflow.GetStatus() == temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING {
-
 				execution, err := temporalClient.DescribeWorkflowExecution(
 					context.Background(),
 					workflow.GetExecution().WorkflowId,
@@ -635,7 +651,6 @@ func (m model) refetchWorkflowsCmd() tea.Cmd {
 
 				pendingActivities := execution.GetPendingActivities()
 				// Nested loop. We break out of the loop if we find an activity with an attempt > 0
-				// The append below will alows run
 				for _, activity := range pendingActivities {
 					if activity.GetAttempt() > 0 {
 						listItem.attempts = activity.GetAttempt()
@@ -647,7 +662,7 @@ func (m model) refetchWorkflowsCmd() tea.Cmd {
 			}
 			returnObj = append(returnObj, listItem)
 		}
-		return updateWorkflowsMsg{workflows: returnObj}
+		return updateWorkflowsMsg{workflows: returnObj, nextPageToken: queryResult.NextPageToken}
 	}
 }
 
@@ -732,6 +747,8 @@ type model struct {
 	confirmationFlowState      confirmationFlowStateMsg
 	keys                       KeyMap
 	help                       help.Model
+	page                       int
+	nextPageTokenCache         map[int][]byte
 	activeSearchParams         activeSearchParams
 	searchMode                 searchMode
 	searchOptions              []string
@@ -754,7 +771,11 @@ func initialModel() model {
 	activeSearchParams[WORKFLOWTYPE] = []string{}
 	activeSearchParams[WORKFLOWID] = []string{}
 	activeSearchParams[EXECUTIONSTATUS] = []string{}
+	nextPageTokenCache := make(map[int][]byte)
+	nextPageTokenCache[0] = []byte{}
 	return model{
+		nextPageTokenCache: nextPageTokenCache,
+		page:               0,
 		focusedWorkflowState: focusedModeState{
 			keys:                  FocusedModeKeyMap,
 			compactedHistoryStack: make([]compactHistoryStackItem, 0),
@@ -855,6 +876,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case updateWorkflowsMsg:
 		m.workflows = msg.workflows
+		m.nextPageTokenCache[m.page+1] = msg.nextPageToken
 		return m, nil
 
 	// Is it a key press?
@@ -909,6 +931,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll
+		case key.Matches(msg, m.keys.NextPage):
+			m.page++
+			return m, m.refetchWorkflowsCmd()
+		case key.Matches(msg, m.keys.PrevPage):
+			if m.page > 0 {
+				m.page--
+
+			}
+			return m, m.refetchWorkflowsCmd()
 		// Reset the search params if c is pressed
 		case key.Matches(msg, m.keys.ClearSearch):
 			m.activeSearchParams = make(map[searchMode][]string)
