@@ -91,7 +91,7 @@ var DefaultKeyMap = KeyMap{
 	),
 	ClearSearch: key.NewBinding(
 		key.WithKeys("c"),
-		key.WithHelp("c", "clear"),
+		key.WithHelp("c", "clear search"),
 	),
 	RefetchWorkflows: key.NewBinding(
 		key.WithKeys("r"),
@@ -143,7 +143,7 @@ func (k KeyMap) ShortHelp() []key.Binding {
 // key.Map interface.
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.SearchWorkflowType},
+		{k.Up, k.Down, k.SearchWorkflowType, k.SearchExecutionStatus, k.SearchWorkflowId, k.ToggleParentWorkflowMode, k.OpenWorkflowInWeb, k.ClearSearch, k.RefetchWorkflows, k.TerminateWorkflow, k.Exit, k.NextPage, k.PrevPage},
 	}
 }
 
@@ -552,8 +552,8 @@ var highlightedStatusIconStyle = lipgloss.NewStyle().Background(lipgloss.Color("
 var attemptsStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff0000"))
 
 func (m model) renderTable(workflows []*workflowTableListItem) string {
-
-	tableSurroundStyle := lipgloss.NewStyle().Padding(0, 0).Height(m.viewport.Height - SEARCH_INPUT_HEIGHT - HEADER_HEIGHT)
+	helpHeight := lipgloss.Height(m.help.View(m.keys))
+	tableSurroundStyle := lipgloss.NewStyle().Padding(0, 0).Height(m.viewport.Height - HEADER_HEIGHT - helpHeight)
 	t := table.New().
 		Border(lipgloss.RoundedBorder()).
 		BorderRight(false).
