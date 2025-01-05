@@ -162,6 +162,8 @@ var temporalEnumStatusList = []string{
 	// I removed the CONTINUED_AS_NEW status
 }
 
+var TABLE_LIST_PAGE_SIZE = 40
+
 type ExecutionStatusStyleInfo struct {
 	displayName string
 	icon        string
@@ -623,7 +625,7 @@ func (m model) refetchWorkflowsCmd() tea.Cmd {
 		nextPageToken := m.nextPageTokenCache[m.page]
 		queryResult, err := temporalClient.ListWorkflow(context.Background(), &workflowservice.ListWorkflowExecutionsRequest{
 			Query:         query,
-			PageSize:      40,
+			PageSize:      int32(TABLE_LIST_PAGE_SIZE),
 			NextPageToken: nextPageToken,
 		})
 		if err != nil {
@@ -633,9 +635,46 @@ func (m model) refetchWorkflowsCmd() tea.Cmd {
 		returnObj := []*workflowTableListItem{}
 		for _, workflow := range result {
 			listItem := &workflowTableListItem{workflow: workflow, attempts: 0}
+			returnObj = append(returnObj, listItem)
+		}
+		return updateWorkflowsMsg{workflows: returnObj, nextPageToken: queryResult.NextPageToken}
+	}
+}
+
+type updateVisibleWorkflowsMsg struct {
+	workflowsMap map[string]*workflow.WorkflowExecutionInfo
+}
+
+type updateVisibleWorkflowAttempsMsg struct {
+	updateMapping map[string]int32
+}
+
+func (m model) updateVisibleWorkflowAttempsBackgroundCmd(delay time.Duration) tea.Cmd {
+	return tea.Tick(time.Second*delay, func(_ time.Time) tea.Msg {
+		returnObj := make(map[string]int32)
+		temporalClient, _ := getTemporalClient()
+		currentRunningExecutionIds := []string{}
+		for _, execution := range m.workflows {
+			if execution.workflow.GetCloseTime() == nil {
+				currentRunningExecutionIds = append(currentRunningExecutionIds, "'"+execution.workflow.GetExecution().WorkflowId+"'")
+			}
+		}
+		if len(currentRunningExecutionIds) == 0 {
+			return updateVisibleWorkflowAttempsMsg{updateMapping: returnObj}
+		}
+		query := fmt.Sprintf("WorkflowId IN (%s)", strings.Join(currentRunningExecutionIds, ","))
+		queryResult, err := temporalClient.ListWorkflow(context.Background(), &workflowservice.ListWorkflowExecutionsRequest{
+			Query:    query,
+			PageSize: int32(TABLE_LIST_PAGE_SIZE),
+		})
+		if err != nil {
+			log.Fatalf("Failed to list workflows: %v", err)
+		}
+		// Look for workflows that are in the current list and update them
+		workflows := queryResult.GetExecutions()
+		for _, workflow := range workflows {
 			// Skip if started less that 10 minutes ago
 			if workflow.GetStartTime().AsTime().UTC().After(time.Now().UTC().Add(-10 * time.Minute)) {
-				returnObj = append(returnObj, listItem)
 				continue
 			}
 			// TODO: Run this code in the background so it does not block the first render
@@ -652,26 +691,23 @@ func (m model) refetchWorkflowsCmd() tea.Cmd {
 				pendingActivities := execution.GetPendingActivities()
 				// Nested loop. We break out of the loop if we find an activity with an attempt > 0
 				for _, activity := range pendingActivities {
-					if activity.GetAttempt() > 0 {
-						listItem.attempts = activity.GetAttempt()
-						listItem.workflow = workflow
-						break
+					for _, currentWorkflow := range m.workflows {
+						if workflow.GetExecution().WorkflowId == currentWorkflow.workflow.GetExecution().WorkflowId {
+							returnObj[workflow.GetExecution().WorkflowId] = activity.GetAttempt()
+							break
+						}
 					}
 				}
-
+				continue
 			}
-			returnObj = append(returnObj, listItem)
 		}
-		return updateWorkflowsMsg{workflows: returnObj, nextPageToken: queryResult.NextPageToken}
-	}
-}
-
-type updateVisibleWorkflowsMsg struct {
-	workflows []*workflow.WorkflowExecutionInfo
+		return updateVisibleWorkflowAttempsMsg{updateMapping: returnObj}
+	})
 }
 
 func (m model) updateVisibleWorkflowsBackgroundCmd() tea.Cmd {
 	return tea.Tick(time.Second*5, func(_ time.Time) tea.Msg {
+		returnObj := make(map[string]*workflow.WorkflowExecutionInfo)
 		temporalClient, _ := getTemporalClient()
 		currentRunningExecutionIds := []string{}
 		for _, execution := range m.workflows {
@@ -680,18 +716,27 @@ func (m model) updateVisibleWorkflowsBackgroundCmd() tea.Cmd {
 			}
 		}
 		if len(currentRunningExecutionIds) == 0 {
-			return updateVisibleWorkflowsMsg{workflows: []*workflow.WorkflowExecutionInfo{}}
+			return updateVisibleWorkflowsMsg{workflowsMap: returnObj}
 		}
 		query := fmt.Sprintf("WorkflowId IN (%s)", strings.Join(currentRunningExecutionIds, ","))
 		queryResult, err := temporalClient.ListWorkflow(context.Background(), &workflowservice.ListWorkflowExecutionsRequest{
 			Query:    query,
-			PageSize: 20,
+			PageSize: int32(TABLE_LIST_PAGE_SIZE),
 		})
 		if err != nil {
 			log.Fatalf("Failed to list workflows: %v", err)
 		}
-		return updateVisibleWorkflowsMsg{workflows: queryResult.GetExecutions()}
+		// Look for workflows that are in the current list and update them
+		workflows := queryResult.GetExecutions()
+		for _, updatedWorkflow := range workflows {
+			for _, currentWorkflow := range m.workflows {
+				if updatedWorkflow.GetExecution().WorkflowId == currentWorkflow.workflow.GetExecution().WorkflowId {
+					returnObj[updatedWorkflow.GetExecution().WorkflowId] = updatedWorkflow
+				}
+			}
+		}
 
+		return updateVisibleWorkflowsMsg{workflowsMap: returnObj}
 	})
 }
 
@@ -859,13 +904,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.upToDateWorkflowCount[msg.executionStatus] = msg.count
 		return m, m.backgroundUpdateWorkflowCountCmd(msg.executionStatus)
 
+	case updateVisibleWorkflowAttempsMsg:
+		for i, existingWorkflow := range m.workflows {
+			workflowId := existingWorkflow.workflow.GetExecution().WorkflowId
+			if _, ok := msg.updateMapping[workflowId]; ok {
+				m.workflows[i].attempts = msg.updateMapping[workflowId]
+			}
+		}
+		return m, m.updateVisibleWorkflowAttempsBackgroundCmd(10)
+
 	case updateVisibleWorkflowsMsg:
-		// Look for workflows that are in the current list and update them
-		for _, updatedWorkflow := range msg.workflows {
-			for i, currentWorkflow := range m.workflows {
-				if updatedWorkflow.GetExecution().WorkflowId == currentWorkflow.workflow.GetExecution().WorkflowId {
-					m.workflows[i].workflow = updatedWorkflow
-				}
+		for i, existingWorkflow := range m.workflows {
+			workflowId := existingWorkflow.workflow.GetExecution().WorkflowId
+			if _, ok := msg.workflowsMap[workflowId]; ok {
+				m.workflows[i].workflow = msg.workflowsMap[workflowId]
 			}
 		}
 		return m, m.updateVisibleWorkflowsBackgroundCmd()
@@ -937,7 +989,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.PrevPage):
 			if m.page > 0 {
 				m.page--
-
 			}
 			return m, m.refetchWorkflowsCmd()
 		// Reset the search params if c is pressed
@@ -983,6 +1034,7 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		m.refetchWorkflowsCmd(),
 		m.updateVisibleWorkflowsBackgroundCmd(),
+		m.updateVisibleWorkflowAttempsBackgroundCmd(3),
 		m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED),
 		m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING),
 		m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED),
