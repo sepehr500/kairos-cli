@@ -403,10 +403,8 @@ func (m model) focusedModeView() string {
 		Border(lipgloss.HiddenBorder()).
 		StyleFunc(func(row, col int) lipgloss.Style {
 			switch {
-			case row == m.focusedWorkflowState.cursor+1:
+			case row == m.focusedWorkflowState.cursor:
 				return SelectedRowStyle
-			case row == 0:
-				return HeaderStyle
 			case row%2 == 0:
 				return EvenRowStyle
 			default:
