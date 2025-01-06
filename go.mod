@@ -1,4 +1,4 @@
-module github.com/kairos-cli
+module github.com/sepehr500/kairos-cli
 
 go 1.22.6
 
