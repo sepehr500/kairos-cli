@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"flag"
 	"log"
 	"log/slog"
 	"os"
@@ -69,22 +70,37 @@ func getTemporalClient() (client.Client, error) {
 	}
 
 	once.Do(func() {
-		clientOptions := client.Options{
-			Namespace: config.Namespace["default"].TemporalNamespace,
-			HostPort:  config.Namespace["default"].TemporalCloudHost,
-			ConnectionOptions: client.ConnectionOptions{
-				TLS: &tls.Config{
-					Certificates: []tls.Certificate{
-						cert,
+		isLocal := flag.Bool("local", false, "Connect to local temporal on localhost:7233")
+		flag.Parse()
+		var clientOptions client.Options
+		if *isLocal == true {
+			clientOptions =
+				client.Options{
+					HostPort: "localhost:7233",
+					Logger: tlog.NewStructuredLogger(
+						slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+							AddSource: true,
+							Level:     slog.LevelDebug,
+						}))),
+				}
+		} else {
+			clientOptions = client.Options{
+				Namespace: config.Namespace["default"].TemporalNamespace,
+				HostPort:  config.Namespace["default"].TemporalCloudHost,
+				ConnectionOptions: client.ConnectionOptions{
+					TLS: &tls.Config{
+						Certificates: []tls.Certificate{
+							cert,
+						},
 					},
 				},
-			},
 
-			Logger: tlog.NewStructuredLogger(
-				slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-					AddSource: true,
-					Level:     slog.LevelDebug,
-				}))),
+				Logger: tlog.NewStructuredLogger(
+					slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+						AddSource: true,
+						Level:     slog.LevelDebug,
+					}))),
+			}
 		}
 		var err error
 		temporalClient, err = client.Dial(clientOptions)
