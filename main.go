@@ -626,7 +626,7 @@ type refetchWorkflowCmdOptions struct {
 	nextPageToken []byte
 }
 
-func (m model) refetchWorkflowsCmd() tea.Cmd {
+func (m *model) refetchWorkflowsCmd() tea.Cmd {
 	return func() tea.Msg {
 		temporalClient, _ := getTemporalClient()
 		query := m.constructQueryString()
@@ -645,6 +645,10 @@ func (m model) refetchWorkflowsCmd() tea.Cmd {
 			listItem := &workflowTableListItem{workflow: workflow, attempts: 0}
 			returnObj = append(returnObj, listItem)
 		}
+		// I don't love this...but it's needed to solve the issue of  updateVisibleWorkflowAttempsBackgroundCmd
+		// Need the workflow list be up to date. tea.Sequence runs when the message is returned, not when the message is handled
+		// TODO: Restructure code so updateVisibleWorkflowAttempsBackgroundCmd runs after the updateWorkflowsMsg is handled
+		m.workflows = returnObj
 		return updateWorkflowsMsg{workflows: returnObj, nextPageToken: queryResult.NextPageToken}
 	}
 }
@@ -657,7 +661,7 @@ type updateVisibleWorkflowAttempsMsg struct {
 	updateMapping map[string]int32
 }
 
-func (m model) updateVisibleWorkflowAttempsBackgroundCmd(delay time.Duration) tea.Cmd {
+func (m *model) updateVisibleWorkflowAttempsBackgroundCmd(delay time.Duration) tea.Cmd {
 	return tea.Tick(time.Second*delay, func(_ time.Time) tea.Msg {
 		returnObj := make(map[string]int32)
 		temporalClient, _ := getTemporalClient()
@@ -685,7 +689,6 @@ func (m model) updateVisibleWorkflowAttempsBackgroundCmd(delay time.Duration) te
 			if workflow.GetStartTime().AsTime().UTC().After(time.Now().UTC().Add(-10 * time.Minute)) {
 				continue
 			}
-			// TODO: Run this code in the background so it does not block the first render
 			if workflow.GetStatus() == temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING {
 				execution, err := temporalClient.DescribeWorkflowExecution(
 					context.Background(),
@@ -795,23 +798,22 @@ type workflowTableListItem struct {
 }
 
 type model struct {
-	focusedWorkflowState       focusedModeState
-	parentWorkflowMode         bool
-	confirmationFlowState      confirmationFlowStateMsg
-	keys                       KeyMap
-	help                       help.Model
-	page                       int
-	nextPageTokenCache         map[int][]byte
-	activeSearchParams         activeSearchParams
-	searchMode                 searchMode
-	searchOptions              []string
-	searchInput                textinput.Model
-	ready                      bool
-	workflows                  []*workflowTableListItem
-	cursor                     int // which to-do list item our cursor is pointing at
-	selected                   map[int]bool
-	viewport                   viewport.Model
-	staticVisibleWorkflowCount map[temporalEnums.WorkflowExecutionStatus]int64
+	focusedWorkflowState  focusedModeState
+	parentWorkflowMode    bool
+	confirmationFlowState confirmationFlowStateMsg
+	keys                  KeyMap
+	help                  help.Model
+	page                  int
+	nextPageTokenCache    map[int][]byte
+	activeSearchParams    activeSearchParams
+	searchMode            searchMode
+	searchOptions         []string
+	searchInput           textinput.Model
+	ready                 bool
+	workflows             []*workflowTableListItem
+	cursor                int // which to-do list item our cursor is pointing at
+	selected              map[int]bool
+	viewport              viewport.Model
 	// This is the workflow count that is up to date in the background
 	upToDateWorkflowCount map[temporalEnums.WorkflowExecutionStatus]int64
 }
@@ -850,12 +852,6 @@ func initialModel() model {
 		workflows:          []*workflowTableListItem{},
 		selected:           make(map[int]bool),
 		upToDateWorkflowCount: map[temporalEnums.WorkflowExecutionStatus]int64{
-			temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED: 0,
-			temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING:   0,
-			temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED:    0,
-			temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED:  0,
-		},
-		staticVisibleWorkflowCount: map[temporalEnums.WorkflowExecutionStatus]int64{
 			temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED: 0,
 			temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING:   0,
 			temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED:    0,
@@ -907,7 +903,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case updateWorkflowCountMsg:
-		m.staticVisibleWorkflowCount[msg.executionStatus] = msg.count
+		m.upToDateWorkflowCount[msg.executionStatus] = msg.count
 		return m, nil
 	case backgroundUpdateWorkflowCountMsg:
 		m.upToDateWorkflowCount[msg.executionStatus] = msg.count
@@ -1043,18 +1039,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(
+	return tea.Sequence(
 		m.refetchWorkflowsCmd(),
-		m.updateVisibleWorkflowsBackgroundCmd(),
-		m.updateVisibleWorkflowAttempsBackgroundCmd(3),
-		m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED),
-		m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING),
-		m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED),
-		m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED),
-		m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED),
-		m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED),
-		m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED),
-		m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING),
+		tea.Batch(
+			m.updateVisibleWorkflowsBackgroundCmd(),
+			m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED),
+			m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING),
+			m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED),
+			m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED),
+			m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED),
+			m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED),
+			m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED),
+			m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING),
+			m.updateVisibleWorkflowAttempsBackgroundCmd(3),
+		),
 	)
 }
 func main() {
