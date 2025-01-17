@@ -1,3 +1,7 @@
+# kairos-cli
+A fast and pleasnt temporal cli client
+
+
 ## Configuration
 ```
 [namespace.default]

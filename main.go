@@ -143,7 +143,7 @@ func (k KeyMap) ShortHelp() []key.Binding {
 // key.Map interface.
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.SearchWorkflowType, k.SearchExecutionStatus, k.SearchWorkflowId, k.ToggleParentWorkflowMode, k.OpenWorkflowInWeb, k.ClearSearch, k.RefetchWorkflows, k.TerminateWorkflow, k.Exit, k.NextPage, k.PrevPage},
+		{k.Up, k.Down, k.SearchWorkflowType, k.SearchExecutionStatus, k.SearchWorkflowId, k.ToggleParentWorkflowMode, k.OpenWorkflowInWeb, k.ClearSearch, k.RefetchWorkflows, k.RestartWorkflow, k.TerminateWorkflow, k.Exit, k.NextPage, k.PrevPage},
 	}
 }
 
