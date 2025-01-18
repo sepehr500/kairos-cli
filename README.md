@@ -28,7 +28,7 @@ Although the Temporal team has been doing a great job with the Temporal web UI, 
 ## Installation
 
 ```
-go install sepehr500/kairos-cli@latest
+go install github.com/sepehr500/kairos-cli@latest
 ```
 
 ## Configuration
