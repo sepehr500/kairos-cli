@@ -48,6 +48,12 @@ xxxxxxxxxxxxxxxxxxx
 """
 ```
 
+The config supports multiple namespaces (if none is specified it looks for default).
+
+```
+kairos-cli -namespace=test
+```
+
 ## Run
 ```
 kairos-cli
