@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -313,7 +314,7 @@ func (m model) getPossibleSearchOptionsCmd() tea.Msg {
 		return []string{}
 	}
 	if m.searchMode == WORKFLOWTYPE || m.searchMode == WORKFLOWID {
-		temporalClient, _ := getTemporalClient()
+		temporalClient, _ := m.getTemporalClient()
 		query := fmt.Sprintf("%s BETWEEN \"%s\" AND \"%s~\"", m.searchMode, m.searchInput.Value(), m.searchInput.Value())
 		result, err := temporalClient.ListWorkflow(context.Background(), &workflowservice.ListWorkflowExecutionsRequest{
 			Query:    query,
@@ -411,7 +412,7 @@ func (m *model) clearListState() {
 
 func (m *model) setFocusedWorkflowCmd(workflowId string, runId string) tea.Cmd {
 	return func() tea.Msg {
-		temporalClient, _ := getTemporalClient()
+		temporalClient, _ := m.getTemporalClient()
 		executionDescription, err := temporalClient.DescribeWorkflowExecution(context.Background(), workflowId, runId)
 		historyIterator := temporalClient.GetWorkflowHistory(context.Background(), workflowId, runId, false, 0)
 
@@ -450,8 +451,8 @@ func (m model) clearCompletionCmd() tea.Cmd {
 
 func (m model) restartWorkflowCmd(workflowId string, runId string) tea.Cmd {
 	restartWorkflowCmd := func() tea.Msg {
-		temporalClient, _ := getTemporalClient()
-		namespaceInfo := getDefaultNamespaceInfo()
+		temporalClient, _ := m.getTemporalClient()
+		namespaceInfo := m.getTemporalConfig()
 		workflowHistory := temporalClient.GetWorkflowHistory(context.Background(), workflowId, runId, false, 0)
 		// Find first eventId that is  `WORKFLOW_TASK_COMPLETED`,`WORKFLOW_TASK_TIMED_OUT`, `WORKFLOW_TASK_FAILED`
 		eventId := int64(0)
@@ -500,7 +501,7 @@ func (m model) restartWorkflowCmd(workflowId string, runId string) tea.Cmd {
 
 func (m model) terminateWorkflowCmd(workflowId string, runId string) tea.Cmd {
 	termanateWorkflowCmd := func() tea.Msg {
-		temporalClient, _ := getTemporalClient()
+		temporalClient, _ := m.getTemporalClient()
 		err := temporalClient.TerminateWorkflow(context.Background(), workflowId, runId, "CLI Termination")
 		if err != nil {
 			log.Fatalf("Failed to terminate workflow: %v", err)
@@ -628,7 +629,7 @@ type refetchWorkflowCmdOptions struct {
 
 func (m *model) refetchWorkflowsCmd() tea.Cmd {
 	return func() tea.Msg {
-		temporalClient, _ := getTemporalClient()
+		temporalClient, _ := m.getTemporalClient()
 		query := m.constructQueryString()
 		nextPageToken := m.nextPageTokenCache[m.page]
 		queryResult, err := temporalClient.ListWorkflow(context.Background(), &workflowservice.ListWorkflowExecutionsRequest{
@@ -664,7 +665,7 @@ type updateVisibleWorkflowAttempsMsg struct {
 func (m *model) updateVisibleWorkflowAttempsBackgroundCmd(delay time.Duration) tea.Cmd {
 	return tea.Tick(time.Second*delay, func(_ time.Time) tea.Msg {
 		returnObj := make(map[string]int32)
-		temporalClient, _ := getTemporalClient()
+		temporalClient, _ := m.getTemporalClient()
 		currentRunningExecutionIds := []string{}
 		for _, execution := range m.workflows {
 			if execution.workflow.GetCloseTime() == nil {
@@ -719,7 +720,7 @@ func (m *model) updateVisibleWorkflowAttempsBackgroundCmd(delay time.Duration) t
 func (m model) updateVisibleWorkflowsBackgroundCmd() tea.Cmd {
 	return tea.Tick(time.Second*5, func(_ time.Time) tea.Msg {
 		returnObj := make(map[string]*workflow.WorkflowExecutionInfo)
-		temporalClient, _ := getTemporalClient()
+		temporalClient, _ := m.getTemporalClient()
 		currentRunningExecutionIds := []string{}
 		for _, execution := range m.workflows {
 			if execution.workflow.GetCloseTime() == nil {
@@ -758,7 +759,7 @@ type updateWorkflowCountMsg struct {
 
 func (m model) refetchWorkflowCountCmd(executionStatus temporalEnums.WorkflowExecutionStatus) tea.Cmd {
 	return func() tea.Msg {
-		temporalClient, _ := getTemporalClient()
+		temporalClient, _ := m.getTemporalClient()
 		statusQuery := fmt.Sprintf("ExecutionStatus = %d", executionStatus)
 		query := m.constructQueryString()
 		if query == "" {
@@ -798,6 +799,7 @@ type workflowTableListItem struct {
 }
 
 type model struct {
+	namespace             string
 	focusedWorkflowState  focusedModeState
 	parentWorkflowMode    bool
 	confirmationFlowState confirmationFlowStateMsg
@@ -985,7 +987,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor < len(m.workflows) {
 				workflowId := m.workflows[m.cursor].workflow.GetExecution().WorkflowId
 				runId := m.workflows[m.cursor].workflow.Execution.GetRunId()
-				openWorkflowInBrowser(workflowId, runId)
+				m.openWorkflowInBrowser(workflowId, runId)
 			}
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll
@@ -1039,6 +1041,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) Init() tea.Cmd {
+	namespace := flag.String("namespace", "default", "Namespace")
+	flag.Parse()
+	m.namespace = *namespace
 	return tea.Sequence(
 		m.refetchWorkflowsCmd(),
 		tea.Batch(
@@ -1046,10 +1051,10 @@ func (m model) Init() tea.Cmd {
 			m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED),
 			m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING),
 			m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED),
-			m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED),
+			m.backgroundUpdateWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_TERMINATED),
 			m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_COMPLETED),
 			m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_FAILED),
-			m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_CANCELED),
+			m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_TERMINATED),
 			m.refetchWorkflowCountCmd(temporalEnums.WORKFLOW_EXECUTION_STATUS_RUNNING),
 			m.updateVisibleWorkflowAttempsBackgroundCmd(3),
 		),

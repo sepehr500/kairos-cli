@@ -39,12 +39,7 @@ type (
 	}
 )
 
-func getDefaultNamespaceInfo() NamespaceInfo {
-	config := getTemporalConfig()
-	return config.Namespace["default"]
-}
-
-func getTemporalConfig() TomlConfig {
+func (m model) getTemporalConfig() NamespaceInfo {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		log.Fatal("Error fetching home directory:", err)
@@ -57,19 +52,18 @@ func getTemporalConfig() TomlConfig {
 		log.Fatal("Temporal credentials are missing. Please add credentials to .config/kairos/credentials")
 		os.Exit(0)
 	}
-	return config
+	return config.Namespace[m.namespace]
 
 }
 
-func getTemporalClient() (client.Client, error) {
-	config := getTemporalConfig()
-
-	cert, err := tls.X509KeyPair([]byte(config.Namespace["default"].TemporalPublicKey), []byte(config.Namespace["default"].TemporalPrivateKey))
-	if err != nil {
-		log.Fatalf("Failed to load Temporal credentials: %v", err)
-	}
+func (m model) getTemporalClient() (client.Client, error) {
 
 	once.Do(func() {
+		config := m.getTemporalConfig()
+		cert, err := tls.X509KeyPair([]byte(config.TemporalPublicKey), []byte(config.TemporalPrivateKey))
+		if err != nil {
+			log.Fatalf("Failed to load Temporal credentials: %v, from namespace: %s", err, m.namespace)
+		}
 		isLocal := flag.Bool("local", false, "Connect to local temporal on localhost:7233")
 		flag.Parse()
 		var clientOptions client.Options
@@ -85,8 +79,8 @@ func getTemporalClient() (client.Client, error) {
 				}
 		} else {
 			clientOptions = client.Options{
-				Namespace: config.Namespace["default"].TemporalNamespace,
-				HostPort:  config.Namespace["default"].TemporalCloudHost,
+				Namespace: config.TemporalNamespace,
+				HostPort:  config.TemporalCloudHost,
 				ConnectionOptions: client.ConnectionOptions{
 					TLS: &tls.Config{
 						Certificates: []tls.Certificate{
@@ -102,7 +96,6 @@ func getTemporalClient() (client.Client, error) {
 					}))),
 			}
 		}
-		var err error
 		temporalClient, err = client.Dial(clientOptions)
 		if err != nil {
 			log.Fatalf("Failed to create Temporal client: %v", err)
@@ -111,9 +104,9 @@ func getTemporalClient() (client.Client, error) {
 	return temporalClient, nil
 }
 
-func openWorkflowInBrowser(workflowID string, runID string) {
-	config := getTemporalConfig()
-	url := "https://cloud.temporal.io" + "/namespaces/" + config.Namespace["default"].TemporalNamespace + "/workflows/" + workflowID + "/" + runID + "/history"
+func (m model) openWorkflowInBrowser(workflowID string, runID string) {
+	config := m.getTemporalConfig()
+	url := "https://cloud.temporal.io" + "/namespaces/" + config.TemporalNamespace + "/workflows/" + workflowID + "/" + runID + "/history"
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "linux":
@@ -137,8 +130,8 @@ func openWorkflowInBrowser(workflowID string, runID string) {
 
 }
 
-func KickoffWorkflow(workflowName string, payload string) (string, error) {
-	temporalClient, _ := getTemporalClient()
+func (m model) KickoffWorkflow(workflowName string, payload string) (string, error) {
+	temporalClient, _ := m.getTemporalClient()
 	options := client.StartWorkflowOptions{
 		ID:        workflowName,
 		TaskQueue: "general",
@@ -158,8 +151,8 @@ func KickoffWorkflow(workflowName string, payload string) (string, error) {
 	return we.GetRunID(), nil
 }
 
-func GetWorkflowHistory(workflowID string, runID string) ([]*history.HistoryEvent, error) {
-	temporalClient, _ := getTemporalClient()
+func (m model) GetWorkflowHistory(workflowID string, runID string) ([]*history.HistoryEvent, error) {
+	temporalClient, _ := m.getTemporalClient()
 	defer temporalClient.Close()
 	historyList := temporalClient.GetWorkflowHistory(context.Background(), workflowID, runID, false, 0)
 
