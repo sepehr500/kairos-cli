@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -799,7 +798,6 @@ type workflowTableListItem struct {
 }
 
 type model struct {
-	namespace             string
 	focusedWorkflowState  focusedModeState
 	parentWorkflowMode    bool
 	confirmationFlowState confirmationFlowStateMsg
@@ -1041,9 +1039,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) Init() tea.Cmd {
-	namespace := flag.String("namespace", "default", "Namespace")
-	flag.Parse()
-	m.namespace = *namespace
 	return tea.Sequence(
 		m.refetchWorkflowsCmd(),
 		tea.Batch(

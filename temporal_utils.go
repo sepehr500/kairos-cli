@@ -22,7 +22,9 @@ import (
 
 var (
 	temporalClient client.Client
+	namespace      string
 	once           sync.Once
+	configOnce     sync.Once
 )
 
 type NamespaceInfo struct {
@@ -40,6 +42,10 @@ type (
 )
 
 func (m model) getTemporalConfig() NamespaceInfo {
+	configOnce.Do(func() {
+		namespace = *flag.String("namespace", "default", "Namespace")
+		flag.Parse()
+	})
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		log.Fatal("Error fetching home directory:", err)
@@ -52,7 +58,7 @@ func (m model) getTemporalConfig() NamespaceInfo {
 		log.Fatal("Temporal credentials are missing. Please add credentials to .config/kairos/credentials")
 		os.Exit(0)
 	}
-	return config.Namespace[m.namespace]
+	return config.Namespace[namespace]
 
 }
 
@@ -62,7 +68,7 @@ func (m model) getTemporalClient() (client.Client, error) {
 		config := m.getTemporalConfig()
 		cert, err := tls.X509KeyPair([]byte(config.TemporalPublicKey), []byte(config.TemporalPrivateKey))
 		if err != nil {
-			log.Fatalf("Failed to load Temporal credentials: %v, from namespace: %s", err, m.namespace)
+			log.Fatalf("Failed to load Temporal credentials: %v", err)
 		}
 		isLocal := flag.Bool("local", false, "Connect to local temporal on localhost:7233")
 		flag.Parse()
@@ -104,7 +110,7 @@ func (m model) getTemporalClient() (client.Client, error) {
 	return temporalClient, nil
 }
 
-func (m model) openWorkflowInBrowser(workflowID string, runID string) {
+func (m *model) openWorkflowInBrowser(workflowID string, runID string) {
 	config := m.getTemporalConfig()
 	url := "https://cloud.temporal.io" + "/namespaces/" + config.TemporalNamespace + "/workflows/" + workflowID + "/" + runID + "/history"
 	var cmd *exec.Cmd
