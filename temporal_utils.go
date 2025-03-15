@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"sync"
 
@@ -25,6 +26,7 @@ var (
 	namespace      string
 	once           sync.Once
 	configOnce     sync.Once
+	isLocal        *bool
 )
 
 type NamespaceInfo struct {
@@ -43,9 +45,21 @@ type (
 
 func (m model) getTemporalConfig() NamespaceInfo {
 	configOnce.Do(func() {
+		isLocal = flag.Bool("local", false, "Connect to local temporal on localhost:7233")
 		namespace = *flag.String("namespace", "default", "Namespace")
+		if *isLocal {
+			namespace = "default"
+		}
 		flag.Parse()
 	})
+	if *isLocal == true {
+		return NamespaceInfo{
+			TemporalCloudHost:  "localhost:7233",
+			TemporalNamespace:  "default",
+			TemporalPrivateKey: "",
+			TemporalPublicKey:  "",
+		}
+	}
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		log.Fatal("Error fetching home directory:", err)
@@ -58,6 +72,7 @@ func (m model) getTemporalConfig() NamespaceInfo {
 		log.Fatal("Temporal credentials are missing. Please add credentials to .config/kairos/credentials")
 		os.Exit(0)
 	}
+
 	return config.Namespace[namespace]
 
 }
@@ -66,17 +81,12 @@ func (m model) getTemporalClient() (client.Client, error) {
 
 	once.Do(func() {
 		config := m.getTemporalConfig()
-		cert, err := tls.X509KeyPair([]byte(config.TemporalPublicKey), []byte(config.TemporalPrivateKey))
-		if err != nil {
-			log.Fatalf("Failed to load Temporal credentials: %v", err)
-		}
-		isLocal := flag.Bool("local", false, "Connect to local temporal on localhost:7233")
 		flag.Parse()
 		var clientOptions client.Options
-		if *isLocal == true {
+		if strings.Contains(config.TemporalCloudHost, "localhost") {
 			clientOptions =
 				client.Options{
-					HostPort: "localhost:7233",
+					HostPort: config.TemporalCloudHost,
 					Logger: tlog.NewStructuredLogger(
 						slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 							AddSource: true,
@@ -84,6 +94,10 @@ func (m model) getTemporalClient() (client.Client, error) {
 						}))),
 				}
 		} else {
+			cert, err := tls.X509KeyPair([]byte(config.TemporalPublicKey), []byte(config.TemporalPrivateKey))
+			if err != nil {
+				log.Fatalf("Failed to load Temporal credentials: %v", err)
+			}
 			clientOptions = client.Options{
 				Namespace: config.TemporalNamespace,
 				HostPort:  config.TemporalCloudHost,
@@ -102,6 +116,7 @@ func (m model) getTemporalClient() (client.Client, error) {
 					}))),
 			}
 		}
+		var err error
 		temporalClient, err = client.Dial(clientOptions)
 		if err != nil {
 			log.Fatalf("Failed to create Temporal client: %v", err)
@@ -112,7 +127,11 @@ func (m model) getTemporalClient() (client.Client, error) {
 
 func (m *model) openWorkflowInBrowser(workflowID string, runID string) {
 	config := m.getTemporalConfig()
-	url := "https://cloud.temporal.io" + "/namespaces/" + config.TemporalNamespace + "/workflows/" + workflowID + "/" + runID + "/history"
+	host := "https://cloud.temporal.io"
+	if strings.Contains(config.TemporalCloudHost, "localhost") {
+		host = "http://localhost:8233"
+	}
+	url := host + "/namespaces/" + config.TemporalNamespace + "/workflows/" + workflowID + "/" + runID + "/history"
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "linux":
