@@ -26,6 +26,7 @@ var (
 	namespace      string
 	once           sync.Once
 	configOnce     sync.Once
+	isLocal        *bool
 )
 
 type NamespaceInfo struct {
@@ -43,8 +44,8 @@ type (
 )
 
 func (m model) getTemporalConfig() NamespaceInfo {
-	isLocal := flag.Bool("local", false, "Connect to local temporal on localhost:7233")
 	configOnce.Do(func() {
+		isLocal = flag.Bool("local", false, "Connect to local temporal on localhost:7233")
 		namespace = *flag.String("namespace", "default", "Namespace")
 		if *isLocal {
 			namespace = "default"
