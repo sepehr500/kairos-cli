@@ -54,6 +54,14 @@ The config supports multiple namespaces (if none is specified it looks for defau
 kairos-cli -namespace=test
 ```
 
+To run the cli against dev temporal use the `-local` flag
+
+```
+# After starting the dev temporal server with 'temporal server start-dev' 
+
+kairos-cli -local
+```
+
 ## Run
 ```
 kairos-cli
